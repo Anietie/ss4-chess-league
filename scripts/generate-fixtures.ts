@@ -2,16 +2,13 @@
  * scripts/generate-fixtures.ts
  * Run: npx tsx scripts/generate-fixtures.ts --season=1 --league=league_1 --tier=premier --start=2026-05-01
  */
-import { createClient } from "@supabase/supabase-js";
 import {
   generateRoundRobin,
   generateSwissRound1,
 } from "../src/lib/fixture-generator";
+import { createServerClient } from "../src/lib/supabase";
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!,
-);
+const supabase = createServerClient();
 
 const arg = (name: string) =>
   process.argv.find((a) => a.startsWith(`--${name}=`))?.split("=")[1];

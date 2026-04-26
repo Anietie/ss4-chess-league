@@ -1,10 +1,7 @@
-import { createClient } from "@supabase/supabase-js";
 import { drawCLGroups } from "../src/lib/fixture-generator";
+import { createServerClient } from "../src/lib/supabase";
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!,
-);
+const supabase = createServerClient();
 const arg = (n: string) =>
   process.argv.find((a) => a.startsWith(`--${n}=`))?.split("=")[1];
 
@@ -29,7 +26,7 @@ async function generateCLDraw() {
   console.log(
     `\n🎲 CL Draw — Season ${season} | ${qualifiers.length} qualifiers\n`,
   );
-  
+
   const qualifierMap = new Map(
     qualifiers.map((q: any) => [
       q.player_id,

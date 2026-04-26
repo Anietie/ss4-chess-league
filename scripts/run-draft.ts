@@ -2,13 +2,10 @@
  * scripts/run-draft.ts
  * Run: npx tsx scripts/run-draft.ts --season=1
  */
-import { createClient } from "@supabase/supabase-js";
 import { checkLeagueImbalance, runSnakeDraft } from "../src/lib/snake-draft";
+import { createServerClient } from "../src/lib/supabase";
 
-const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL!,
-  process.env.SUPABASE_SERVICE_ROLE_KEY!,
-);
+const supabase = createServerClient();
 const season = Number(
   process.argv.find((a) => a.startsWith("--season="))?.split("=")[1] ?? 1,
 );
@@ -61,19 +58,17 @@ async function main() {
       .from("players")
       .update({ home_league: a.assigned_league, current_tier: a.assigned_tier })
       .eq("id", a.player_id);
-    await supabase
-      .from("season_draft")
-      .upsert(
-        {
-          season,
-          player_id: a.player_id,
-          draft_position: a.draft_position,
-          assigned_league: a.assigned_league,
-          assigned_tier: a.assigned_tier,
-          seed_rating_at_draft: a.seed_rating,
-        },
-        { onConflict: "season,player_id" },
-      );
+    await supabase.from("season_draft").upsert(
+      {
+        season,
+        player_id: a.player_id,
+        draft_position: a.draft_position,
+        assigned_league: a.assigned_league,
+        assigned_tier: a.assigned_tier,
+        seed_rating_at_draft: a.seed_rating,
+      },
+      { onConflict: "season,player_id" },
+    );
   }
   await supabase.from("seasons").update({ status: "active" }).eq("id", season);
   console.log("\n✓ Draft committed to database.");
