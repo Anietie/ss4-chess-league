@@ -1,11 +1,17 @@
 'use client';
 import { useEffect, useState, useCallback, useRef } from 'react';
-import { useParams } from 'next/navigation';
+import { useParams, useRouter } from 'next/navigation';
 import { io, Socket } from 'socket.io-client';
 import dynamic from 'next/dynamic';
 import { Chess } from 'chess.js';
-import { Flag, Handshake, Eye, Download, RotateCcw } from 'lucide-react';
+import { Flag, Handshake, Eye, Download, RotateCcw, ShieldAlert } from 'lucide-react';
 import Link from 'next/link';
+import { createClient } from '@supabase/supabase-js';
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+);
 
 const Chessboard = dynamic(() => import('react-chessboard').then(m => m.Chessboard), { ssr: false });
 
@@ -65,56 +71,104 @@ function MoveHistory({ moves }: { moves: string[] }) {
 
 export default function GameRoomPage() {
   const { gameId } = useParams<{ gameId: string }>();
+  const router = useRouter();
   const [chess] = useState(() => new Chess());
   const [fen, setFen] = useState(chess.fen());
-  const [status, setStatus] = useState<'loading'|'waiting'|'active'|'ended'>('loading');
+  const [status, setStatus] = useState<'loading'|'waiting'|'active'|'ended'|'unauthorized'>('loading');
   const [result, setResult] = useState<string|null>(null);
   const [moves, setMoves] = useState<string[]>([]);
   const [drawOffered, setDrawOffered] = useState(false);
   const [spectators, setSpectators] = useState(0);
+  
+  // TAP-TO-MOVE STATE
+  const [moveFrom, setMoveFrom] = useState<any>(null);
+  const [optionSquares, setOptionSquares] = useState({});
+
   const socketRef = useRef<Socket|null>(null);
   const myColorRef = useRef<'white'|'black'|null>(null);
-
   const [white, setWhite] = useState({ name: 'White', rating: 1200, timeMs: 600_000, isActive: false });
   const [black, setBlack] = useState({ name: 'Black', rating: 1200, timeMs: 600_000, isActive: false });
 
   const myPlayerId = typeof window !== 'undefined' ? localStorage.getItem('player_id') : null;
 
   useEffect(() => {
-    const sock = io(process.env.NEXT_PUBLIC_SOCKET_URL || 'http://localhost:3001');
-    socketRef.current = sock;
-    sock.emit('join_game', { game_id: gameId, player_id: myPlayerId, is_spectator: !myPlayerId });
+    async function checkAuth() {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) { setStatus('unauthorized'); return; }
 
-    sock.on('game_state', d => {
-      if (d.pgn) chess.loadPgn(d.pgn);
-      setFen(d.fen || chess.fen()); setMoves(chess.history()); setStatus(d.status === 'active' ? 'active' : 'waiting'); setSpectators(d.spectator_count || 0);
-      setWhite(p => ({ ...p, timeMs: d.white_time, isActive: d.current_turn === 'w' && d.status === 'active' }));
-      setBlack(p => ({ ...p, timeMs: d.black_time, isActive: d.current_turn === 'b' && d.status === 'active' }));
-    });
+      const sock = io(process.env.NEXT_PUBLIC_SOCKET_URL || 'http://localhost:3001');
+      socketRef.current = sock;
+      sock.emit('join_game', { game_id: gameId, player_id: myPlayerId, is_spectator: !myPlayerId });
 
-    sock.on('game_started', d => {
-      setStatus('active');
-      if (myPlayerId === d.white_player_id) myColorRef.current = 'white';
-      if (myPlayerId === d.black_player_id) myColorRef.current = 'black';
-      setWhite(p => ({ ...p, timeMs: d.white_time, isActive: true }));
-      setBlack(p => ({ ...p, timeMs: d.black_time, isActive: false }));
-    });
+      sock.on('game_state', d => {
+        if (d.pgn) chess.loadPgn(d.pgn);
+        setFen(d.fen || chess.fen()); setMoves(chess.history()); setStatus(d.status === 'active' ? 'active' : 'waiting'); setSpectators(d.spectator_count || 0);
+        setWhite(p => ({ ...p, timeMs: d.white_time, isActive: d.current_turn === 'w' && d.status === 'active' }));
+        setBlack(p => ({ ...p, timeMs: d.black_time, isActive: d.current_turn === 'b' && d.status === 'active' }));
+      });
 
-    sock.on('move_made', d => {
-      chess.load(d.fen); setFen(d.fen); setMoves(chess.history());
-      setWhite(p => ({ ...p, timeMs: d.white_time, isActive: d.current_turn === 'w' }));
-      setBlack(p => ({ ...p, timeMs: d.black_time, isActive: d.current_turn === 'b' }));
-    });
+      sock.on('game_started', d => {
+        setStatus('active');
+        if (myPlayerId === d.white_player_id) myColorRef.current = 'white';
+        if (myPlayerId === d.black_player_id) myColorRef.current = 'black';
+        setWhite(p => ({ ...p, timeMs: d.white_time, isActive: true }));
+        setBlack(p => ({ ...p, timeMs: d.black_time, isActive: false }));
+      });
 
-    sock.on('game_ended', d => { setStatus('ended'); setResult(d.result); setWhite(p => ({ ...p, isActive: false })); setBlack(p => ({ ...p, isActive: false })); });
-    sock.on('draw_offered', ({ by_player_id }) => { if (by_player_id !== myPlayerId) setDrawOffered(true); });
-    sock.on('spectator_count', ({ count }) => setSpectators(count));
+      sock.on('move_made', d => {
+        chess.load(d.fen); setFen(d.fen); setMoves(chess.history());
+        setWhite(p => ({ ...p, timeMs: d.white_time, isActive: d.current_turn === 'w' }));
+        setBlack(p => ({ ...p, timeMs: d.black_time, isActive: d.current_turn === 'b' }));
+      });
 
-    // FIX: Added curly braces so it returns void instead of the Socket instance
-    return () => {
-      sock.disconnect();
-    };
+      sock.on('game_ended', d => { setStatus('ended'); setResult(d.result); setWhite(p => ({ ...p, isActive: false })); setBlack(p => ({ ...p, isActive: false })); });
+      sock.on('draw_offered', ({ by_player_id }) => { if (by_player_id !== myPlayerId) setDrawOffered(true); });
+      sock.on('spectator_count', ({ count }) => setSpectators(count));
+
+      return () => sock.disconnect();
+    }
+    checkAuth();
   }, [gameId, chess, myPlayerId]);
+
+  // HELPER: Show valid move dots
+  function getMoveOptions(square: any) {
+    const moves = chess.moves({ square, verbose: true });
+    if (moves.length === 0) { setOptionSquares({}); return false; }
+    const newSquares: any = {};
+    moves.map((m) => {
+      newSquares[m.to] = {
+        background: chess.get(m.to) ? "radial-gradient(circle, rgba(0,0,0,.1) 85%, transparent 85%)" : "radial-gradient(circle, rgba(0,0,0,.1) 25%, transparent 25%)",
+        borderRadius: "50%",
+      };
+      return m;
+    });
+    newSquares[square] = { background: "rgba(255, 255, 0, 0.4)" };
+    setOptionSquares(newSquares);
+    return true;
+  }
+
+  // TAP-TO-MOVE HANDLER
+  function onSquareClick(square: any) {
+    if (status !== 'active' || !myPlayerId) return;
+    const isMyTurn = (chess.turn() === 'w' && myColorRef.current === 'white') || (chess.turn() === 'b' && myColorRef.current === 'black');
+    if (!isMyTurn) return;
+
+    if (!moveFrom) {
+      const hasOptions = getMoveOptions(square);
+      if (hasOptions) setMoveFrom(square);
+      return;
+    }
+
+    // Try to make move
+    const sock = socketRef.current;
+    sock?.emit('make_move', { 
+      game_id: gameId, 
+      player_id: myPlayerId, 
+      move: { from: moveFrom, to: square, promotion: 'q' } 
+    });
+    setMoveFrom(null);
+    setOptionSquares({});
+  }
 
   const onDrop = useCallback((src: string, tgt: string) => {
     const sock = socketRef.current;
@@ -124,6 +178,17 @@ export default function GameRoomPage() {
     sock.emit('make_move', { game_id: gameId, player_id: myPlayerId, move: { from: src, to: tgt, promotion: 'q' } });
     return true;
   }, [status, chess, gameId, myPlayerId]);
+
+  if (status === 'unauthorized') return (
+    <div className="min-h-[60vh] flex items-center justify-center px-4">
+      <div className="card p-8 w-full max-w-sm text-center space-y-4">
+        <ShieldAlert className="mx-auto text-red-400" size={48} />
+        <h2 className="text-xl font-bold text-chalk">Authentication Required</h2>
+        <p className="text-ink-400 text-sm">You must verify your email and sign in before you can participate in a live match.</p>
+        <button onClick={() => router.push('/auth/login')} className="btn-gold w-full text-sm">Sign In</button>
+      </div>
+    </div>
+  );
 
   const orientation = myColorRef.current === 'black' ? 'black' : 'white';
   const isSpectator = !myPlayerId || myColorRef.current === null;
@@ -141,7 +206,7 @@ export default function GameRoomPage() {
 
       {drawOffered && (
         <div className="mb-4 p-4 rounded-xl bg-gold/10 border border-gold/30 flex items-center justify-between">
-          <span className="text-sm text-chalk">Draw offered — accept?</span>
+          <span className="text-sm text-chalk">Draw offered - accept?</span>
           <div className="flex gap-2">
             <button onClick={() => { socketRef.current?.emit('accept_draw', { game_id: gameId }); setDrawOffered(false); }} className="btn-gold btn-sm">Accept</button>
             <button onClick={() => setDrawOffered(false)} className="btn-ghost btn-sm">Decline</button>
@@ -152,10 +217,16 @@ export default function GameRoomPage() {
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_280px] gap-6">
         <div className="space-y-3">
           <Clock {...(orientation === 'white' ? { ...black, color: 'black' } : { ...white, color: 'white' })} />
-          <div className="board-wrapper">
+          
+          {/* UPDATED: touch-none wrapper stops scrolling during piece movement */}
+          <div className="board-wrapper touch-none select-none">
             {typeof window !== 'undefined' && (
               <Chessboard
-                position={fen} onPieceDrop={onDrop} boardOrientation={orientation}
+                position={fen} 
+                onPieceDrop={onDrop} 
+                onSquareClick={onSquareClick}
+                customSquareStyles={optionSquares}
+                boardOrientation={orientation}
                 customDarkSquareStyle={{ backgroundColor: '#4a6080' }}
                 customLightSquareStyle={{ backgroundColor: '#b0bcce' }}
                 arePiecesDraggable={status === 'active' && !isSpectator}
@@ -163,7 +234,9 @@ export default function GameRoomPage() {
               />
             )}
           </div>
+          
           <Clock {...(orientation === 'white' ? { ...white, color: 'white' } : { ...black, color: 'black' })} />
+          
           {!isSpectator && status === 'active' && (
             <div className="flex gap-2">
               <button onClick={() => socketRef.current?.emit('offer_draw', { game_id: gameId, player_id: myPlayerId })} className="btn-ghost flex-1 gap-2 text-sm"><Handshake size={14} /> Offer Draw</button>
@@ -173,7 +246,7 @@ export default function GameRoomPage() {
           {status === 'ended' && (
             <div className="flex gap-2">
               <Link href={`/game/${gameId}`} className="btn-ghost flex-1 justify-center gap-2 text-sm"><RotateCcw size={14} /> Analysis</Link>
-              <button onClick={() => { const blob = new Blob([chess.pgn()], {type:'text/plain'}); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `game-${gameId}.pgn`; a.click(); }} className="btn-ghost flex-1 justify-center gap-2 text-sm"><Download size={14} /> PGN</button>
+              <button onClick={() => { const pgn = chess.pgn(); const blob = new Blob([pgn], {type:'text/plain'}); const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = `game-${gameId}.pgn`; a.click(); }} className="btn-ghost flex-1 justify-center gap-2 text-sm"><Download size={14} /> PGN</button>
             </div>
           )}
         </div>
@@ -186,7 +259,7 @@ export default function GameRoomPage() {
               <div className="flex justify-between"><span className="text-ink-400">Spectators</span><span className="text-chalk">{spectators}</span></div>
             </div>
           </div>
-          {status === 'waiting' && <div className="card p-6 text-center border-dashed border-ink-600"><div className="text-2xl mb-2">⏳</div><div className="text-sm text-ink-400">Waiting for both players…</div></div>}
+          {status === 'waiting' && <div className="card p-6 text-center border-dashed border-ink-600"><div className="text-2xl mb-2">⏳</div><div className="text-sm text-ink-400">Waiting for both players...</div></div>}
         </div>
       </div>
     </div>

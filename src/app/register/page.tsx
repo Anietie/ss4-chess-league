@@ -106,7 +106,7 @@ export default function RegisterPage() {
     setCountdown(60); // Start the 60-second cooldown
   };
 
-  // ── Check your email ────────────────────────────────────────────────────────
+  // ── Check your email (Skipping Calibration) ─────────────────────────────────
   if (step === 'verify') return (
     <div className="min-h-screen flex items-center justify-center px-4">
       <div className="card p-8 w-full max-w-md text-center space-y-6">
@@ -152,23 +152,38 @@ export default function RegisterPage() {
   if (step === 'calibrating') return (
     <div className="min-h-screen flex items-center justify-center px-4">
       <div className="card p-8 w-full max-w-md text-center space-y-6">
-        <div className="text-5xl">🎯</div>
-        <h1 className="font-display text-2xl font-bold text-chalk">Two Steps Left</h1>
-        <div className="card p-4 text-left space-y-2 text-sm text-ink-300">
-          <div className="flex items-center gap-2"><span className="text-gold font-bold">1.</span> Click the confirmation link in your email</div>
-          <div className="flex items-center gap-2"><span className="text-gold font-bold">2.</span> Complete 5 bot calibration games to set your starting rating</div>
-        </div>
-        <div className="card p-4 text-left space-y-1">
-          <div className="text-xs text-ink-400">Registered as</div>
-          <div className="font-medium text-chalk">{form.full_name}</div>
-          <div className="text-sm text-ink-400">{form.email}</div>
-        </div>
-        <p className="text-ink-500 text-xs">
-          No Chess.com or Lichess account was found, so we calibrate your rating with 5 bot games before placing you in the draft.
+        <div className="text-5xl">📧</div>
+        <h1 className="font-display text-2xl font-bold text-chalk">Verify Your Email</h1>
+        <p className="text-ink-300 text-sm">
+          We sent a confirmation link to <strong className="text-gold">{form.email}</strong>.
         </p>
-        <button onClick={() => router.push('/calibrate')} className="btn-gold w-full">
-          Start Calibration &rarr;
-        </button>
+        
+        {error && <p className="text-red-400 text-xs bg-red-900/20 border border-red-800 rounded-lg px-3 py-2 text-left">{error}</p>}
+
+        <div className="card p-4 text-left space-y-2 text-sm text-ink-300">
+          <div className="flex items-start gap-2"><span className="text-gold font-bold">1.</span> <span>Click the confirmation link in your email</span></div>
+          <div className="flex items-start gap-2"><span className="text-gold font-bold">2.</span> <span>Sign in to your new account</span></div>
+          <div className="flex items-start gap-2"><span className="text-gold font-bold">3.</span> <span>Complete 5 bot calibration games to set your rating</span></div>
+        </div>
+        
+        <p className="text-ink-500 text-xs">
+          Because no Chess.com or Lichess account was found, you must calibrate your rating before entering the draft.
+        </p>
+
+        <div className="space-y-3 pt-2">
+          <button 
+            onClick={handleResend} 
+            disabled={loading || countdown > 0} 
+            className="btn-ghost w-full disabled:opacity-50"
+          >
+            {loading ? 'Sending...' : countdown > 0 ? `Resend in ${countdown}s` : 'Resend Confirmation Email'}
+          </button>
+          
+          {/* FIXED: This now properly forces them to log in before playing the bot */}
+          <button onClick={() => router.push('/auth/login')} className="btn-gold w-full">
+            Go to Sign In &rarr;
+          </button>
+        </div>
       </div>
     </div>
   );
