@@ -17,7 +17,7 @@ export default function RegisterPage() {
   const [error, setError]   = useState('');
   const [result, setResult] = useState<any>(null);
   
-  // NEW: Cooldown timer state
+  // Cooldown timer state
   const [countdown, setCountdown] = useState(0);
 
   const [form, setForm] = useState({
@@ -31,7 +31,7 @@ export default function RegisterPage() {
     year_started_chess: '',
   });
 
-  // NEW: Timer logic that ticks down every second
+  // Timer logic that ticks down every second
   useEffect(() => {
     if (countdown <= 0) return;
     const timer = setInterval(() => setCountdown(c => c - 1), 1000);
@@ -78,7 +78,7 @@ export default function RegisterPage() {
     setLoading(false);
   };
 
-  // NEW: Handle resending the confirmation email
+  // Handle resending the confirmation email
   const handleResend = async () => {
     if (countdown > 0) return;
     setLoading(true); setError('');
@@ -167,7 +167,7 @@ export default function RegisterPage() {
           No Chess.com or Lichess account was found, so we calibrate your rating with 5 bot games before placing you in the draft.
         </p>
         <button onClick={() => router.push('/calibrate')} className="btn-gold w-full">
-          Start Calibration ->
+          Start Calibration &rarr;
         </button>
       </div>
     </div>
@@ -230,8 +230,8 @@ export default function RegisterPage() {
         {/* Rating seed explainer */}
         <div className="card p-3 text-xs text-ink-400 space-y-0.5 bg-ink-900">
           <div className="text-chalk font-medium mb-1">How rating seeding works</div>
-          <div>• Chess.com / Lichess rapid rating -> instant seed, skip calibration</div>
-          <div>• No platform account -> 5 bot calibration games after registration</div>
+          <div>• Chess.com / Lichess rapid rating &rarr; instant seed, skip calibration</div>
+          <div>• No platform account &rarr; 5 bot calibration games after registration</div>
           <div>• All ratings shown as <span className="font-mono text-gold">1234?</span> until 5 SS4 league games played</div>
         </div>
 
