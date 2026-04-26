@@ -1,0 +1,45 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&family=Playfair+Display:wght@700;800;900&family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap');
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --font-body: 'Inter', sans-serif;
+}
+
+body {
+  background-color: #0a0c12;
+  background-image: radial-gradient(ellipse 80% 40% at 50% -10%, #1a2f4520, transparent);
+}
+::selection { background: #d4a84340; color: #e8c56a; }
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: #0f1218; }
+::-webkit-scrollbar-thumb { background: #2a3347; border-radius: 3px; }
+
+@layer components {
+  .card { @apply bg-ink-800 border border-ink-700 rounded-xl; }
+  .card-hover { @apply card transition-all duration-200 hover:border-ink-600 hover:bg-ink-700; }
+  .btn { @apply inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg font-medium text-sm transition-all duration-150 cursor-pointer; }
+  .btn-gold { @apply btn bg-gold text-navy hover:bg-gold-light active:bg-gold-dark; }
+  .btn-ghost { @apply btn bg-transparent text-chalk-700 border border-ink-600 hover:border-ink-500 hover:bg-ink-700; }
+  .btn-danger { @apply btn bg-red-900/60 text-red-300 border border-red-800 hover:bg-red-800/60; }
+  .btn-sm { @apply px-3 py-1.5 text-xs; }
+  .btn-lg { @apply px-6 py-3 text-base; }
+  .input { @apply w-full px-3 py-2 rounded-lg bg-ink-900 border border-ink-600 text-chalk placeholder-ink-400 text-sm focus:outline-none focus:border-gold/60 focus:ring-1 focus:ring-gold/20 transition-colors; }
+  .section-label { @apply text-xs uppercase tracking-widest font-semibold text-ink-400; }
+  .page-enter { animation: fadeUp 0.4s ease-out forwards; }
+  .live-dot { @apply inline-block w-2 h-2 rounded-full bg-red-500; animation: pulse 2s cubic-bezier(0.4,0,0.6,1) infinite; }
+  .board-wrapper { @apply rounded-xl overflow-hidden; box-shadow: 0 20px 60px #00000080, 0 0 0 1px #ffffff10; }
+  .clock-active { @apply font-mono text-2xl font-bold text-chalk tabular-nums; }
+  .clock-low { @apply font-mono text-2xl font-bold tabular-nums; color: #ef4444; animation: pulse 1s steps(1) infinite; }
+  .clock-inactive { @apply font-mono text-2xl font-bold text-ink-400 tabular-nums; }
+  .glow-gold { filter: drop-shadow(0 0 8px #d4a84360); }
+  .glow-star { filter: drop-shadow(0 0 12px #f5c84260); }
+  .no-scrollbar::-webkit-scrollbar { display: none; }
+  .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+  .league-pill-l1 { @apply inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-navy-800 text-gold border border-gold/30; }
+  .league-pill-l2 { @apply inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-crimson/30 text-silver border border-silver/30; }
+  .league-pill-cl { @apply inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-pitch-800 text-star border border-star/40; }
+  .tier-pill-premier { @apply inline-flex px-2 py-0.5 rounded text-xs font-semibold bg-gold/15 text-gold border border-gold/20; }
+  .tier-pill-development { @apply inline-flex px-2 py-0.5 rounded text-xs font-semibold bg-ink-700 text-ink-300 border border-ink-600; }
+}

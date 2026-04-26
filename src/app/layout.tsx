@@ -1,0 +1,60 @@
+import type { Metadata } from 'next';
+import './globals.css';
+import { NavBar } from '@/components/layout/NavBar';
+import { Providers } from '@/components/layout/Providers';
+import { createClient } from '@supabase/supabase-js';
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.SUPABASE_SERVICE_ROLE_KEY!
+);
+
+export const metadata: Metadata = {
+  title: { default: 'SS4 Chess League', template: '%s | SS4 Chess League' },
+  description: 'Parallel League Architecture · Glicko-2 · Champions League',
+};
+
+export default function RootLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <html lang="en" className="dark">
+      <body className="font-body bg-ink text-chalk antialiased min-h-screen">
+        <Providers>
+          <NavBar />
+          <main className="pt-16 min-h-screen">{children}</main>
+          <Footer />
+        </Providers>
+      </body>
+    </html>
+  );
+}
+
+export async function Footer() {
+  const { data: season } = await supabase
+    .from('seasons')
+    .select('id, name, status')
+    .in('status', ['active', 'playoffs', 'registration', 'champions_league'])
+    .order('id', { ascending: false })
+    .limit(1)
+    .single();
+ 
+  const seasonLabel = season?.name ?? (season ? `Season ${season.id}` : 'Pre-Season');
+ 
+  return (
+    <footer className="border-t border-ink-700 bg-ink-900 mt-16">
+      <div className="max-w-7xl mx-auto px-4 py-6 flex flex-col sm:flex-row items-center justify-between gap-2 text-xs text-ink-500">
+        <div className="flex items-center gap-2">
+          <span className="text-gold">♟</span>
+          <span className="font-display font-bold text-ink-300">SS4 Chess League</span>
+        </div>
+        <div className="text-center">
+          {seasonLabel} · All records preserved forever.
+        </div>
+        <div className="flex items-center gap-4">
+          <a href="/hall-of-champions" className="hover:text-ink-300 transition-colors">Hall of Fame</a>
+          <a href="/players" className="hover:text-ink-300 transition-colors">Players</a>
+          <a href="/register" className="hover:text-ink-300 transition-colors">Register</a>
+        </div>
+      </div>
+    </footer>
+  );
+}

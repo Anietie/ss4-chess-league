@@ -1,0 +1,19 @@
+{
+  "name": "SS4 Chess League",
+  "short_name": "SS4 Chess",
+  "description": "Parallel League Architecture · Glicko-2 · Champions League",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0a0c12",
+  "theme_color": "#d4a843",
+  "orientation": "portrait-primary",
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ],
+  "shortcuts": [
+    { "name": "Dashboard", "url": "/dashboard", "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }] },
+    { "name": "League 1",  "url": "/league/league_1" },
+    { "name": "League 2",  "url": "/league/league_2" }
+  ]
+}
