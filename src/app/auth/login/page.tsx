@@ -95,7 +95,7 @@ function LoginLogic() {
           </div>
         ) : (
           <>
-            <input className="input" type="email" placeholder="your@email.com" value={email} onChange={e => setEmail(e.target.value)} />
+            <input id="reset-email" name="email" autoComplete="email" className="input" type="email" placeholder="your@email.com" value={email} onChange={e => setEmail(e.target.value)} />
             {error && <p className="text-red-400 text-xs">{error}</p>}
           </>
         )}
@@ -123,14 +123,14 @@ function LoginLogic() {
 
         <div className="space-y-3">
           <div>
-            <label className="section-label block mb-1.5">Email</label>
-            <input className="input" type="email" placeholder="your@email.com" value={email}
+            <label htmlFor="login-email" className="section-label block mb-1.5">Email</label>
+            <input id="login-email" name="email" autoComplete="email" className="input" type="email" placeholder="your@email.com" value={email}
               onChange={e => setEmail(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && handleLogin()} autoFocus />
           </div>
           <div>
-            <label className="section-label block mb-1.5">Password</label>
-            <input className="input" type="password" placeholder="••••••••" value={password}
+            <label htmlFor="login-password" className="section-label block mb-1.5">Password</label>
+            <input id="login-password" name="password" autoComplete="current-password" className="input" type="password" placeholder="••••••••" value={password}
               onChange={e => setPassword(e.target.value)}
               onKeyDown={e => e.key === 'Enter' && handleLogin()} />
           </div>

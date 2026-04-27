@@ -1,33 +1,32 @@
+import { createBrowserClient as ssrCreateBrowserClient } from "@supabase/ssr";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
 const url = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const anon = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 
 /**
- * True singleton pattern for browser client
- * - Only created once when first accessed in browser
- * - All imports share the same instance
- * - Prevents multiple GoTrueClient instances competing for storage
+ * Browser singleton using @supabase/ssr's createBrowserClient.
+ * Stores the session in cookies (not localStorage) so the middleware
+ * can read it server-side via request.cookies — fixing the redirect loop
+ * where signInWithPassword succeeded but the middleware still saw no session.
  */
 let browserClient: SupabaseClient | null = null;
 
-function createBrowserClient(): SupabaseClient {
-  if (browserClient === null) {
-    browserClient = createClient(url, anon);
+function getBrowserClient(): SupabaseClient {
+  if (!browserClient) {
+    browserClient = ssrCreateBrowserClient(url, anon) as unknown as SupabaseClient;
   }
   return browserClient;
 }
 
-// Export singleton - in browser, returns same instance every time
-// In server, evaluated at build time (or returns null in SSR context)
 export const supabase: SupabaseClient =
   typeof window !== "undefined"
-    ? createBrowserClient()
+    ? getBrowserClient()
     : (createClient(url, anon) as SupabaseClient);
 
 /**
- * Server-side client with service role key
- * Creates new instance each time (each API route gets fresh instance)
+ * Server-side admin client with service role key.
+ * Creates a fresh instance per call (stateless, no cookie/session management).
  */
 export function createServerClient() {
   return createClient(url, process.env.SUPABASE_SERVICE_ROLE_KEY!, {
