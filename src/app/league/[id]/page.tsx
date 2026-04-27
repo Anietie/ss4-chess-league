@@ -1,4 +1,5 @@
 import { StandingsTable } from "@/components/standings/StandingsTable";
+import { createServerClient } from "@/lib/supabase";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
@@ -41,6 +42,7 @@ function pill(key: string) {
 }
 
 async function getActiveSeason() {
+  const supabase = createServerClient();
   const { data } = await supabase
     .from("seasons")
     .select("id")
@@ -52,6 +54,7 @@ async function getActiveSeason() {
 }
 
 async function getData(league: string, season: number) {
+  const supabase = createServerClient();
   const [
     { data: premier },
     { data: dev },
