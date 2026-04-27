@@ -13,6 +13,11 @@ import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
+
+function isTouchDevice() {
+  if (typeof window === "undefined") return false;
+  return window.matchMedia("(pointer: coarse)").matches;
+}
 import { io, Socket } from "socket.io-client";
 
 const Chessboard = dynamic(
@@ -109,6 +114,7 @@ export default function GameRoomPage() {
   >("loading");
   const [result, setResult] = useState<string | null>(null);
   const [moves, setMoves] = useState<string[]>([]);
+  const [touchMode] = useState(isTouchDevice);
   const [drawOffered, setDrawOffered] = useState(false);
   const [spectators, setSpectators] = useState(0);
 
@@ -367,7 +373,7 @@ export default function GameRoomPage() {
                 boardOrientation={orientation}
                 customDarkSquareStyle={{ backgroundColor: "#4a6080" }}
                 customLightSquareStyle={{ backgroundColor: "#b0bcce" }}
-                arePiecesDraggable={status === "active" && !isSpectator}
+                arePiecesDraggable={status === "active" && !isSpectator && !touchMode}
                 animationDuration={150}
               />
             )}

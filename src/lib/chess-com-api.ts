@@ -37,17 +37,17 @@ export async function fetchLichessRating(username: string): Promise<SeedingResul
 }
 
 export const BOT_LEVELS = [
-  { level: 0,  elo: 600,  name: 'Beginner'    },
-  { level: 1,  elo: 800,  name: 'Squire'      },
-  { level: 2,  elo: 950,  name: 'Knight'      },
-  { level: 3,  elo: 1100, name: 'Bishop'      },
-  { level: 4,  elo: 1250, name: 'Rook'        },
-  { level: 5,  elo: 1400, name: 'Queen'       },
-  { level: 6,  elo: 1550, name: 'Chancellor'  },
-  { level: 7,  elo: 1700, name: 'Grandmaster' },
-  { level: 8,  elo: 1850, name: 'Legend'      },
-  { level: 9,  elo: 2000, name: 'Champion'    },
-  { level: 10, elo: 2200, name: 'Titan'       },
+  { level: 0,  elo: 600,  name: 'Kofi'      },  // friendly beginner, learns as he goes
+  { level: 1,  elo: 800,  name: 'Amara'     },  // curious, makes bold but risky moves
+  { level: 2,  elo: 950,  name: 'Tunde'     },  // street-smart, unpredictable openings
+  { level: 3,  elo: 1100, name: 'Zara'      },  // sharp tactician, loves the attack
+  { level: 4,  elo: 1250, name: 'Emeka'     },  // solid positional player, hard to crack
+  { level: 5,  elo: 1400, name: 'Fatima'    },  // calculating, rarely blunders
+  { level: 6,  elo: 1550, name: 'Kwame'     },  // aggressive, punishes mistakes fast
+  { level: 7,  elo: 1700, name: 'Nadia'     },  // technical master, precise endgames
+  { level: 8,  elo: 1850, name: 'Obinna'    },  // deep preparation, knows theory cold
+  { level: 9,  elo: 2000, name: 'Sanaa'     },  // elite tactician, sees 10 moves ahead
+  { level: 10, elo: 2200, name: 'The Oracle' }, // near-perfect play, almost unbeatable
 ];
 
 export interface CalibrationGame {

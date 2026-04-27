@@ -12,18 +12,22 @@ const Chessboard = dynamic(
   { ssr: false },
 );
 
-// Detect touch-only devices so we disable drag and rely on tap-to-move.
-// This fixes the "piece appears far from finger" issue caused by
-// react-chessboard's drag using raw pointer coords that don't account
-// for the board's offset on mobile viewports.
+// On touch/coarse-pointer devices disable drag — tap-to-move is used instead.
+// This fixes the "piece appears far from finger" offset bug on mobile.
 function isTouchDevice() {
   if (typeof window === "undefined") return false;
   return window.matchMedia("(pointer: coarse)").matches;
 }
 
+// Map an API elo number to the closest named bot in our BOT_LEVELS table
+function getBotByElo(elo: number) {
+  return BOT_LEVELS.reduce((prev, curr) =>
+    Math.abs(curr.elo - elo) < Math.abs(prev.elo - elo) ? curr : prev,
+  );
+}
+
 function useStockfish(level: number) {
   const engineRef = useRef<Worker | null>(null);
-  // Track whether the engine has confirmed it's ready
   const readyRef = useRef(false);
 
   useEffect(() => {
@@ -35,8 +39,6 @@ function useStockfish(level: number) {
       return;
     }
 
-    // Wait for "uciok" before marking ready, so getBestMove knows the
-    // engine is actually responsive (fixes "thinking forever" bug).
     worker.onmessage = (e: MessageEvent) => {
       const line = e.data as string;
       if (line === "uciok") {
@@ -57,36 +59,54 @@ function useStockfish(level: number) {
     };
   }, [level]);
 
-  const getBestMove = useCallback((fen: string): Promise<string> => {
-    return new Promise((resolve) => {
-      const engine = engineRef.current;
-      if (!engine || !readyRef.current) {
-        resolve("");
-        return;
-      }
-      // Timeout after 5s in case engine stalls — prevents infinite "Thinking..."
-      const timeout = setTimeout(() => resolve(""), 5000);
-
-      engine.onmessage = (e: MessageEvent) => {
-        const line = e.data as string;
-        if (line.startsWith("bestmove")) {
-          clearTimeout(timeout);
-          const move = line.split(" ")[1];
-          resolve(move && move !== "(none)" ? move : "");
-        }
-      };
-      engine.postMessage(`position fen ${fen}`);
-      engine.postMessage("go movetime 1000");
-    });
-  }, []);
+  const getBestMove = useCallback(
+    (fen: string): Promise<string> =>
+      new Promise((resolve) => {
+        const engine = engineRef.current;
+        if (!engine || !readyRef.current) return resolve("");
+        const timeout = setTimeout(() => resolve(""), 5000);
+        engine.onmessage = (e: MessageEvent) => {
+          const line = e.data as string;
+          if (line.startsWith("bestmove")) {
+            clearTimeout(timeout);
+            const move = line.split(" ")[1];
+            resolve(move && move !== "(none)" ? move : "");
+          }
+        };
+        engine.postMessage(`position fen ${fen}`);
+        engine.postMessage("go movetime 1000");
+      }),
+    [],
+  );
 
   return { getBestMove };
+}
+
+// ---------------------------------------------------------------------------
+// State shape coming from the API
+// GET  → { calibration_complete, games_played, remaining_games, current_bot_elo, current_level_index }
+// POST → { complete, games_played, remaining_games, next_bot_elo, next_level_index, seed_rating? }
+// ---------------------------------------------------------------------------
+
+interface CalState {
+  calibrationComplete: boolean;
+  gamesPlayed: number;
+  remainingGames: number;
+  botElo: number; // current bot elo (from current_bot_elo / next_bot_elo)
+  levelIndex: number; // stockfish skill index
+  seedRating?: number;
+}
+
+function apiResultCode(r: "win" | "loss" | "draw"): string {
+  if (r === "win") return "1-0";
+  if (r === "loss") return "0-1";
+  return "0.5-0.5";
 }
 
 export default function CalibratePage() {
   const [chess] = useState(() => new Chess());
   const [fen, setFen] = useState(chess.fen());
-  const [state, setState] = useState<any>(null);
+  const [cal, setCal] = useState<CalState | null>(null);
   const [gameActive, setGameActive] = useState(false);
   const [gameResult, setGameResult] = useState<"win" | "loss" | "draw" | null>(
     null,
@@ -97,14 +117,15 @@ export default function CalibratePage() {
   const [isVerified, setIsVerified] = useState(false);
   const [touchMode] = useState(isTouchDevice);
 
-  // TAP-TO-MOVE STATE
   const [moveFrom, setMoveFrom] = useState<string | null>(null);
   const [optionSquares, setOptionSquares] = useState<Record<string, any>>({});
 
   const playerId =
     typeof window !== "undefined" ? localStorage.getItem("player_id") : null;
-  const currentBotLevel = state?.next_bot?.level ?? 3;
-  const { getBestMove } = useStockfish(currentBotLevel);
+
+  // Stockfish skill level: level_index from API → skill 0-20
+  const stockfishSkill = cal ? Math.min(cal.levelIndex * 2, 20) : 6;
+  const { getBestMove } = useStockfish(stockfishSkill);
 
   useEffect(() => {
     async function init() {
@@ -119,8 +140,14 @@ export default function CalibratePage() {
       setIsVerified(true);
       if (playerId) {
         const res = await fetch(`/api/calibration?player_id=${playerId}`);
-        const data = await res.json();
-        setState(data);
+        const d = await res.json();
+        setCal({
+          calibrationComplete: d.calibration_complete ?? false,
+          gamesPlayed: d.games_played ?? 0,
+          remainingGames: d.remaining_games ?? 5,
+          botElo: d.current_bot_elo ?? 1000,
+          levelIndex: d.current_level_index ?? 4,
+        });
       }
       setLoading(false);
     }
@@ -143,33 +170,43 @@ export default function CalibratePage() {
     setMoveFrom(null);
     setOptionSquares({});
     setSubmitting(true);
+
     try {
       const res = await fetch("/api/calibration", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           player_id: playerId,
-          bot_level: currentBotLevel,
-          result,
+          bot_elo: cal?.botElo ?? 1000, // API expects bot_elo (number)
+          result: apiResultCode(result), // API expects '1-0'/'0-1'/'0.5-0.5'
           pgn: chess.pgn(),
         }),
       });
-      const data = await res.json();
-      setState(
-        data.calibration_complete
-          ? {
-              ...state,
-              calibration_complete: true,
-              current_rating: data.final_rating,
-              games_played: data.game_number,
-            }
-          : {
-              ...state,
-              games_played: data.game_number,
-              games_remaining: data.games_remaining,
-              next_bot: data.next_bot,
+      const d = await res.json();
+
+      if (d.complete) {
+        setCal(
+          (prev) =>
+            prev && {
+              ...prev,
+              calibrationComplete: true,
+              gamesPlayed: d.games_played ?? 5,
+              remainingGames: 0,
+              seedRating: d.seed_rating,
             },
-      );
+        );
+      } else {
+        setCal(
+          (prev) =>
+            prev && {
+              ...prev,
+              gamesPlayed: d.games_played ?? prev.gamesPlayed + 1,
+              remainingGames: d.remaining_games ?? prev.remainingGames - 1,
+              botElo: d.next_bot_elo ?? prev.botElo,
+              levelIndex: d.next_level_index ?? prev.levelIndex,
+            },
+        );
+      }
     } finally {
       setSubmitting(false);
     }
@@ -184,17 +221,17 @@ export default function CalibratePage() {
       setOptionSquares({});
       return false;
     }
-    const newSquares: Record<string, any> = {};
+    const sq: Record<string, any> = {};
     moves.forEach((m) => {
-      newSquares[m.to] = {
+      sq[m.to] = {
         background: chess.get(m.to)
           ? "radial-gradient(circle, rgba(0,0,0,.1) 85%, transparent 85%)"
           : "radial-gradient(circle, rgba(0,0,0,.1) 25%, transparent 25%)",
         borderRadius: "50%",
       };
     });
-    newSquares[square] = { background: "rgba(255, 255, 0, 0.4)" };
-    setOptionSquares(newSquares);
+    sq[square] = { background: "rgba(255, 255, 0, 0.4)" };
+    setOptionSquares(sq);
     return true;
   }
 
@@ -206,25 +243,20 @@ export default function CalibratePage() {
     try {
       const result = chess.move(m);
       if (!result) return false;
-
-      // Clear dots immediately after player moves
       setMoveFrom(null);
       setOptionSquares({});
       setFen(chess.fen());
-
       if (chess.isGameOver()) {
         endCalibrationGame(chess.isCheckmate() ? "win" : "draw");
         return true;
       }
-
       setThinking(true);
       const best = await getBestMove(chess.fen());
       if (best) {
         chess.move(best);
         setFen(chess.fen());
-        if (chess.isGameOver()) {
+        if (chess.isGameOver())
           endCalibrationGame(chess.isCheckmate() ? "loss" : "draw");
-        }
       }
       setThinking(false);
       return true;
@@ -236,28 +268,23 @@ export default function CalibratePage() {
 
   function onSquareClick(square: string) {
     if (!gameActive || thinking || chess.turn() !== "w") return;
-
     if (!moveFrom) {
-      const hasOptions = getMoveOptions(square);
-      if (hasOptions) setMoveFrom(square);
+      if (getMoveOptions(square)) setMoveFrom(square);
       return;
     }
-
-    // Clicking same square deselects
     if (square === moveFrom) {
       setMoveFrom(null);
       setOptionSquares({});
       return;
     }
-
-    // Try to move; if invalid, try selecting the new square instead
-    const moves = chess.moves({ square: moveFrom as any, verbose: true });
-    const isValidTarget = moves.some((m) => m.to === square);
-    if (isValidTarget) {
+    const moves = chess.moves({
+      square: moveFrom as any,
+      verbose: true,
+    }) as Move[];
+    if (moves.some((m) => m.to === square)) {
       handleMove({ from: moveFrom, to: square, promotion: "q" });
     } else {
-      const hasOptions = getMoveOptions(square);
-      if (hasOptions) setMoveFrom(square);
+      if (getMoveOptions(square)) setMoveFrom(square);
       else {
         setMoveFrom(null);
         setOptionSquares({});
@@ -278,7 +305,7 @@ export default function CalibratePage() {
       </div>
     );
 
-  if (!isVerified) {
+  if (!isVerified)
     return (
       <div className="max-w-md mx-auto px-4 py-20 text-center space-y-6">
         <ShieldAlert className="text-red-400 w-16 h-16 mx-auto" />
@@ -294,9 +321,8 @@ export default function CalibratePage() {
         </Link>
       </div>
     );
-  }
 
-  if (state?.calibration_complete) {
+  if (cal?.calibrationComplete)
     return (
       <div className="max-w-lg mx-auto px-4 py-20 text-center page-enter">
         <CheckCircle className="text-green-400 w-16 h-16 mx-auto mb-4" />
@@ -306,7 +332,7 @@ export default function CalibratePage() {
         <div className="card p-6 mb-6 text-center">
           <div className="text-xs text-ink-400 mb-2">Starting Rating</div>
           <div className="font-display text-6xl font-black text-gold">
-            {state.current_rating}
+            {cal.seedRating}
           </div>
           <div className="text-xs text-ink-500 mt-2">
             Rating Deviation: ±200 (provisional)
@@ -317,11 +343,10 @@ export default function CalibratePage() {
         </Link>
       </div>
     );
-  }
 
-  const gamesPlayed = state?.games_played || 0;
-  const gamesRemaining = state?.games_remaining || 5;
-  const nextBot = state?.next_bot || BOT_LEVELS[3];
+  const gamesPlayed = cal?.gamesPlayed ?? 0;
+  const gamesRemaining = cal?.remainingGames ?? 5;
+  const currentBot = getBotByElo(cal?.botElo ?? 1000);
 
   return (
     <div className="max-w-6xl mx-auto px-4 py-8 page-enter">
@@ -336,12 +361,19 @@ export default function CalibratePage() {
         </p>
       </div>
 
+      {/* Progress bar */}
       <div className="max-w-lg mx-auto mb-8">
         <div className="flex gap-2 justify-center mb-3">
           {Array.from({ length: 5 }).map((_, i) => (
             <div
               key={i}
-              className={`h-2 flex-1 rounded-full ${i < gamesPlayed ? "bg-gold" : i === gamesPlayed ? "bg-gold/40 animate-pulse" : "bg-ink-700"}`}
+              className={`h-2 flex-1 rounded-full transition-all duration-500 ${
+                i < gamesPlayed
+                  ? "bg-gold"
+                  : i === gamesPlayed
+                    ? "bg-gold/40 animate-pulse"
+                    : "bg-ink-700"
+              }`}
             />
           ))}
         </div>
@@ -352,14 +384,15 @@ export default function CalibratePage() {
 
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_280px] gap-6">
         <div className="space-y-3">
+          {/* Bot header — name only, no Elo shown */}
           <div className="card p-3 flex items-center gap-3">
             <Bot size={20} className="text-gold" />
             <div>
               <div className="font-medium text-chalk text-sm">
-                {nextBot?.name || "Bot"}
+                {currentBot.name}
               </div>
               <div className="text-xs text-ink-400">
-                ~{nextBot?.elo || 1100} Elo · Stockfish {currentBotLevel}
+                Stockfish · Adaptive difficulty
               </div>
             </div>
             {thinking && (
@@ -377,8 +410,7 @@ export default function CalibratePage() {
                 onSquareClick={onSquareClick}
                 customSquareStyles={optionSquares}
                 boardOrientation="white"
-                // Disable drag on touch devices — tap-to-move works perfectly
-                // and avoids the offset/phantom-piece bug on mobile
+                // Disable drag on touch — tap-to-move handles mobile interaction
                 arePiecesDraggable={gameActive && !thinking && !touchMode}
                 customDarkSquareStyle={{ backgroundColor: "#4a6080" }}
                 customLightSquareStyle={{ backgroundColor: "#b0bcce" }}
@@ -409,15 +441,12 @@ export default function CalibratePage() {
           )}
 
           {gameActive && (
-            <div className="flex gap-2">
-              {/* No "Offer Draw" vs bot — bots don't accept draws */}
-              <button
-                onClick={() => endCalibrationGame("loss")}
-                className="btn-danger w-full text-sm"
-              >
-                Resign
-              </button>
-            </div>
+            <button
+              onClick={() => endCalibrationGame("loss")}
+              className="btn-danger w-full text-sm"
+            >
+              Resign
+            </button>
           )}
 
           {gameResult && !submitting && (
@@ -430,7 +459,7 @@ export default function CalibratePage() {
                     : "border-ink-600"
               }`}
             >
-              <div className="font-bold text-sm mb-3 capitalize">
+              <div className="font-bold text-sm mb-3">
                 {gameResult === "win"
                   ? "You Won!"
                   : gameResult === "loss"
@@ -444,6 +473,7 @@ export default function CalibratePage() {
               )}
             </div>
           )}
+
           {submitting && (
             <div className="text-center text-ink-400 text-sm animate-pulse">
               Saving results...
@@ -461,11 +491,11 @@ export default function CalibratePage() {
               </p>
               <div className="space-y-1.5">
                 <div className="flex items-center gap-2">
-                  <span className="text-green-400">Win &rarr;</span> Next bot is
+                  <span className="text-green-400">Win →</span> Next bot is
                   harder
                 </div>
                 <div className="flex items-center gap-2">
-                  <span className="text-red-400">Loss &rarr;</span> Next bot is
+                  <span className="text-red-400">Loss →</span> Next bot is
                   easier
                 </div>
               </div>
