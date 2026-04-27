@@ -2,15 +2,15 @@
 import { supabase } from "@/lib/supabase";
 import { formatRating } from "@/lib/utils";
 import {
-    Bell,
-    Crown,
-    Home,
-    LayoutDashboard,
-    LogOut,
-    Menu,
-    Star,
-    Users,
-    X,
+  Bell,
+  Crown,
+  Home,
+  LayoutDashboard,
+  LogOut,
+  Menu,
+  Star,
+  Users,
+  X,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
@@ -29,6 +29,7 @@ export function NavBar() {
   const [player, setPlayer] = useState<any>(null);
   const [unread, setUnread] = useState(0);
   const [leagues, setLeagues] = useState<string[]>([]);
+  const [showSignOutConfirm, setShowSignOutConfirm] = useState(false);
 
   useEffect(() => {
     supabase
@@ -65,7 +66,9 @@ export function NavBar() {
     if (email) {
       const { data } = await supabase
         .from("players")
-        .select("id, full_name, home_league, ss4_rating, rating_deviation, current_tier")
+        .select(
+          "id, full_name, home_league, ss4_rating, rating_deviation, current_tier",
+        )
         .eq("email", email)
         .single();
       if (data) {
@@ -83,7 +86,9 @@ export function NavBar() {
       if (session?.user) loadPlayer(session.user.email);
     });
 
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
       if (session?.user) {
         loadPlayer(session.user.email);
       } else {
@@ -93,7 +98,7 @@ export function NavBar() {
     });
 
     return () => subscription.unsubscribe();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleSignOut = async () => {
@@ -110,27 +115,44 @@ export function NavBar() {
 
   const staticLinks = [
     { href: "/", label: "Home", icon: <Home size={13} /> },
-    { href: "/champions-league", label: "Champions League", icon: <Crown size={13} /> },
+    {
+      href: "/champions-league",
+      label: "Champions League",
+      icon: <Crown size={13} />,
+    },
     { href: "/players", label: "Players", icon: <Users size={13} /> },
-    { href: "/hall-of-champions", label: "Hall of Fame", icon: <Star size={13} /> },
+    {
+      href: "/hall-of-champions",
+      label: "Hall of Fame",
+      icon: <Star size={13} />,
+    },
   ];
 
   const allLinks = [
     staticLinks[0],
-    ...leagues.map((l) => ({ href: `/league/${l}`, label: leagueDisplayName(l), icon: null })),
+    ...leagues.map((l) => ({
+      href: `/league/${l}`,
+      label: leagueDisplayName(l),
+      icon: null,
+    })),
     ...staticLinks.slice(1),
   ];
 
   const playerLeaguePill =
-    player?.home_league === "league_1" ? "league-pill-l1" :
-    player?.home_league === "league_2" ? "league-pill-l2" : "league-pill-cl";
+    player?.home_league === "league_1"
+      ? "league-pill-l1"
+      : player?.home_league === "league_2"
+        ? "league-pill-l2"
+        : "league-pill-cl";
 
   return (
     <nav className="sticky top-0 z-50 bg-ink-900/90 backdrop-blur-sm border-b border-ink-700">
       <div className="max-w-7xl mx-auto px-4 h-14 flex items-center justify-between gap-4">
         <Link href="/" className="flex items-center gap-2 flex-shrink-0">
           <span className="text-gold text-xl">♟</span>
-          <span className="font-display font-bold text-chalk hidden sm:block">SS4 Chess</span>
+          <span className="font-display font-bold text-chalk hidden sm:block">
+            SS4 Chess
+          </span>
         </Link>
 
         <div className="hidden lg:flex items-center gap-0.5 overflow-x-auto no-scrollbar">
@@ -141,7 +163,8 @@ export function NavBar() {
               className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm whitespace-nowrap transition-colors
                 ${active(l.href) ? "bg-ink-700 text-chalk" : "text-ink-300 hover:text-chalk hover:bg-ink-800"}`}
             >
-              {l.icon}{l.label}
+              {l.icon}
+              {l.label}
             </Link>
           ))}
         </div>
@@ -149,7 +172,10 @@ export function NavBar() {
         <div className="flex items-center gap-2 flex-shrink-0">
           {player ? (
             <>
-              <Link href="/dashboard" className="relative p-2 text-ink-400 hover:text-chalk transition-colors">
+              <Link
+                href="/notifications"
+                className="relative p-2 text-ink-400 hover:text-chalk transition-colors"
+              >
                 <Bell size={16} />
                 {unread > 0 && (
                   <span className="absolute top-0.5 right-0.5 w-4 h-4 text-[9px] font-bold rounded-full bg-gold text-navy flex items-center justify-center">
@@ -157,12 +183,19 @@ export function NavBar() {
                   </span>
                 )}
               </Link>
-              <Link href="/dashboard" className="flex items-center gap-2 px-3 py-1.5 card-hover rounded-lg">
+              <Link
+                href="/dashboard"
+                className="flex items-center gap-2 px-3 py-1.5 card-hover rounded-lg"
+              >
                 {player.home_league && player.home_league !== "unassigned" && (
-                  <span className={`${playerLeaguePill} text-[10px]`}>{leagueDisplayName(player.home_league)}</span>
+                  <span className={`${playerLeaguePill} text-[10px]`}>
+                    {leagueDisplayName(player.home_league)}
+                  </span>
                 )}
                 <div className="hidden sm:block text-right">
-                  <div className="text-xs font-medium text-chalk leading-none">{player.full_name?.split(" ")[0]}</div>
+                  <div className="text-xs font-medium text-chalk leading-none">
+                    {player.full_name?.split(" ")[0]}
+                  </div>
                   <div className="text-[10px] font-mono text-gold leading-none mt-0.5">
                     {formatRating(player.ss4_rating, player.rating_deviation)}
                   </div>
@@ -170,7 +203,7 @@ export function NavBar() {
                 <LayoutDashboard size={14} className="text-ink-400" />
               </Link>
               <button
-                onClick={handleSignOut}
+                onClick={() => setShowSignOutConfirm(true)}
                 className="p-2 text-ink-400 hover:text-red-400 transition-colors"
                 title="Sign out"
               >
@@ -179,11 +212,21 @@ export function NavBar() {
             </>
           ) : (
             <div className="flex items-center gap-2">
-              <Link href="/auth/login" className="btn-ghost btn-sm">Sign In</Link>
-              <Link href="/register" className="btn-gold btn-sm hidden sm:inline-flex">Register</Link>
+              <Link href="/auth/login" className="btn-ghost btn-sm">
+                Sign In
+              </Link>
+              <Link
+                href="/register"
+                className="btn-gold btn-sm hidden sm:inline-flex"
+              >
+                Register
+              </Link>
             </div>
           )}
-          <button onClick={() => setOpen((o) => !o)} className="lg:hidden p-2 text-ink-400 hover:text-chalk">
+          <button
+            onClick={() => setOpen((o) => !o)}
+            className="lg:hidden p-2 text-ink-400 hover:text-chalk"
+          >
             {open ? <X size={18} /> : <Menu size={18} />}
           </button>
         </div>
@@ -199,22 +242,61 @@ export function NavBar() {
               className={`flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm transition-colors
                 ${active(l.href) ? "bg-ink-700 text-chalk" : "text-ink-300"}`}
             >
-              {l.icon}{l.label}
+              {l.icon}
+              {l.label}
             </Link>
           ))}
           {player ? (
             <button
-              onClick={handleSignOut}
+              onClick={() => setShowSignOutConfirm(true)}
               className="flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm text-red-400 w-full"
             >
               <LogOut size={14} /> Sign Out
             </button>
           ) : (
             <div className="flex gap-2 pt-2">
-              <Link href="/auth/login" onClick={() => setOpen(false)} className="btn-ghost flex-1 justify-center text-sm">Sign In</Link>
-              <Link href="/register" onClick={() => setOpen(false)} className="btn-gold flex-1 justify-center text-sm">Register</Link>
+              <Link
+                href="/auth/login"
+                onClick={() => setOpen(false)}
+                className="btn-ghost flex-1 justify-center text-sm"
+              >
+                Sign In
+              </Link>
+              <Link
+                href="/register"
+                onClick={() => setOpen(false)}
+                className="btn-gold flex-1 justify-center text-sm"
+              >
+                Register
+              </Link>
             </div>
           )}
+        </div>
+      )}
+
+      {/* Sign out confirmation dialog */}
+      {showSignOutConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+          <div className="card p-6 max-w-sm mx-4 space-y-4">
+            <h2 className="font-display text-xl font-bold text-chalk">
+              Sign Out?
+            </h2>
+            <p className="text-sm text-ink-300">
+              Are you sure you want to sign out? You'll need to sign in again to
+              access your account.
+            </p>
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => setShowSignOutConfirm(false)}
+                className="btn-ghost"
+              >
+                Cancel
+              </button>
+              <button onClick={handleSignOut} className="btn-gold">
+                Sign Out
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </nav>
