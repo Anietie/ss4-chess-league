@@ -1,7 +1,7 @@
 "use client";
 import { BOT_LEVELS } from "@/lib/chess-com-api";
 import { supabase } from "@/lib/supabase";
-import { Chess } from "chess.js";
+import { Chess, type Move } from "chess.js";
 import { ArrowRight, Bot, CheckCircle, ShieldAlert } from "lucide-react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
@@ -41,7 +41,9 @@ function useStockfish(level: number) {
       const line = e.data as string;
       if (line === "uciok") {
         readyRef.current = true;
-        worker.postMessage(`setoption name Skill Level value ${Math.min(level * 2, 20)}`);
+        worker.postMessage(
+          `setoption name Skill Level value ${Math.min(level * 2, 20)}`,
+        );
         worker.postMessage("ucinewgame");
       }
     };
@@ -86,7 +88,9 @@ export default function CalibratePage() {
   const [fen, setFen] = useState(chess.fen());
   const [state, setState] = useState<any>(null);
   const [gameActive, setGameActive] = useState(false);
-  const [gameResult, setGameResult] = useState<"win" | "loss" | "draw" | null>(null);
+  const [gameResult, setGameResult] = useState<"win" | "loss" | "draw" | null>(
+    null,
+  );
   const [thinking, setThinking] = useState(false);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -104,7 +108,9 @@ export default function CalibratePage() {
 
   useEffect(() => {
     async function init() {
-      const { data: { user } } = await supabase.auth.getUser();
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
       if (!user || !user.email_confirmed_at) {
         setIsVerified(false);
         setLoading(false);
@@ -151,8 +157,18 @@ export default function CalibratePage() {
       const data = await res.json();
       setState(
         data.calibration_complete
-          ? { ...state, calibration_complete: true, current_rating: data.final_rating, games_played: data.game_number }
-          : { ...state, games_played: data.game_number, games_remaining: data.games_remaining, next_bot: data.next_bot },
+          ? {
+              ...state,
+              calibration_complete: true,
+              current_rating: data.final_rating,
+              games_played: data.game_number,
+            }
+          : {
+              ...state,
+              games_played: data.game_number,
+              games_remaining: data.games_remaining,
+              next_bot: data.next_bot,
+            },
       );
     } finally {
       setSubmitting(false);
@@ -160,7 +176,10 @@ export default function CalibratePage() {
   };
 
   function getMoveOptions(square: string) {
-    const moves = chess.moves({ square, verbose: true });
+    const moves = chess.moves({
+      square: square as any,
+      verbose: true,
+    }) as Move[];
     if (moves.length === 0) {
       setOptionSquares({});
       return false;
@@ -179,7 +198,11 @@ export default function CalibratePage() {
     return true;
   }
 
-  async function handleMove(m: { from: string; to: string; promotion?: string }) {
+  async function handleMove(m: {
+    from: string;
+    to: string;
+    promotion?: string;
+  }) {
     try {
       const result = chess.move(m);
       if (!result) return false;
@@ -228,14 +251,17 @@ export default function CalibratePage() {
     }
 
     // Try to move; if invalid, try selecting the new square instead
-    const moves = chess.moves({ square: moveFrom, verbose: true });
+    const moves = chess.moves({ square: moveFrom as any, verbose: true });
     const isValidTarget = moves.some((m) => m.to === square);
     if (isValidTarget) {
       handleMove({ from: moveFrom, to: square, promotion: "q" });
     } else {
       const hasOptions = getMoveOptions(square);
       if (hasOptions) setMoveFrom(square);
-      else { setMoveFrom(null); setOptionSquares({}); }
+      else {
+        setMoveFrom(null);
+        setOptionSquares({});
+      }
     }
   }
 
@@ -256,11 +282,16 @@ export default function CalibratePage() {
     return (
       <div className="max-w-md mx-auto px-4 py-20 text-center space-y-6">
         <ShieldAlert className="text-red-400 w-16 h-16 mx-auto" />
-        <h1 className="font-display text-3xl font-black text-chalk">Verification Required</h1>
+        <h1 className="font-display text-3xl font-black text-chalk">
+          Verification Required
+        </h1>
         <p className="text-ink-400">
-          You must click the link in your email and sign in before starting calibration.
+          You must click the link in your email and sign in before starting
+          calibration.
         </p>
-        <Link href="/auth/login" className="btn-gold block w-full text-center">Sign In</Link>
+        <Link href="/auth/login" className="btn-gold block w-full text-center">
+          Sign In
+        </Link>
       </div>
     );
   }
@@ -269,13 +300,21 @@ export default function CalibratePage() {
     return (
       <div className="max-w-lg mx-auto px-4 py-20 text-center page-enter">
         <CheckCircle className="text-green-400 w-16 h-16 mx-auto mb-4" />
-        <h1 className="font-display text-3xl font-black text-chalk mb-3">Calibration Complete!</h1>
+        <h1 className="font-display text-3xl font-black text-chalk mb-3">
+          Calibration Complete!
+        </h1>
         <div className="card p-6 mb-6 text-center">
           <div className="text-xs text-ink-400 mb-2">Starting Rating</div>
-          <div className="font-display text-6xl font-black text-gold">{state.current_rating}</div>
-          <div className="text-xs text-ink-500 mt-2">Rating Deviation: ±200 (provisional)</div>
+          <div className="font-display text-6xl font-black text-gold">
+            {state.current_rating}
+          </div>
+          <div className="text-xs text-ink-500 mt-2">
+            Rating Deviation: ±200 (provisional)
+          </div>
         </div>
-        <Link href="/dashboard" className="btn-gold">Go to Dashboard <ArrowRight size={14} /></Link>
+        <Link href="/dashboard" className="btn-gold">
+          Go to Dashboard <ArrowRight size={14} />
+        </Link>
       </div>
     );
   }
@@ -288,9 +327,12 @@ export default function CalibratePage() {
     <div className="max-w-6xl mx-auto px-4 py-8 page-enter">
       <div className="text-center mb-8">
         <Bot className="text-gold w-10 h-10 mx-auto mb-3" />
-        <h1 className="font-display text-3xl font-black text-chalk mb-2">Bot Calibration</h1>
+        <h1 className="font-display text-3xl font-black text-chalk mb-2">
+          Bot Calibration
+        </h1>
         <p className="text-ink-400">
-          Play {gamesRemaining} more game{gamesRemaining !== 1 ? "s" : ""} to determine your rating.
+          Play {gamesRemaining} more game{gamesRemaining !== 1 ? "s" : ""} to
+          determine your rating.
         </p>
       </div>
 
@@ -303,7 +345,9 @@ export default function CalibratePage() {
             />
           ))}
         </div>
-        <div className="text-center text-xs text-ink-500">{gamesPlayed}/5 games completed</div>
+        <div className="text-center text-xs text-ink-500">
+          {gamesPlayed}/5 games completed
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_280px] gap-6">
@@ -311,11 +355,17 @@ export default function CalibratePage() {
           <div className="card p-3 flex items-center gap-3">
             <Bot size={20} className="text-gold" />
             <div>
-              <div className="font-medium text-chalk text-sm">{nextBot?.name || "Bot"}</div>
-              <div className="text-xs text-ink-400">~{nextBot?.elo || 1100} Elo · Stockfish {currentBotLevel}</div>
+              <div className="font-medium text-chalk text-sm">
+                {nextBot?.name || "Bot"}
+              </div>
+              <div className="text-xs text-ink-400">
+                ~{nextBot?.elo || 1100} Elo · Stockfish {currentBotLevel}
+              </div>
             </div>
             {thinking && (
-              <span className="ml-auto text-xs text-ink-400 animate-pulse">Thinking...</span>
+              <span className="ml-auto text-xs text-ink-400 animate-pulse">
+                Thinking...
+              </span>
             )}
           </div>
 
@@ -343,12 +393,17 @@ export default function CalibratePage() {
             </div>
             <div>
               <div className="font-medium text-chalk text-sm">You (White)</div>
-              <div className="text-xs text-ink-400">10 minutes · no increment</div>
+              <div className="text-xs text-ink-400">
+                10 minutes · no increment
+              </div>
             </div>
           </div>
 
           {!gameActive && !gameResult && (
-            <button onClick={startGame} className="btn-gold w-full justify-center btn-lg">
+            <button
+              onClick={startGame}
+              className="btn-gold w-full justify-center btn-lg"
+            >
               Start Game {gamesPlayed + 1} of 5 <ArrowRight size={16} />
             </button>
           )}
@@ -366,12 +421,21 @@ export default function CalibratePage() {
           )}
 
           {gameResult && !submitting && (
-            <div className={`card p-4 text-center border ${
-              gameResult === "win" ? "border-green-700 bg-green-900/20" :
-              gameResult === "loss" ? "border-red-800 bg-red-900/20" : "border-ink-600"
-            }`}>
+            <div
+              className={`card p-4 text-center border ${
+                gameResult === "win"
+                  ? "border-green-700 bg-green-900/20"
+                  : gameResult === "loss"
+                    ? "border-red-800 bg-red-900/20"
+                    : "border-ink-600"
+              }`}
+            >
               <div className="font-bold text-sm mb-3 capitalize">
-                {gameResult === "win" ? "You Won!" : gameResult === "loss" ? "Bot Won" : "Draw!"}
+                {gameResult === "win"
+                  ? "You Won!"
+                  : gameResult === "loss"
+                    ? "Bot Won"
+                    : "Draw!"}
               </div>
               {gamesRemaining > 0 && (
                 <button onClick={startGame} className="btn-gold btn-sm">
@@ -381,7 +445,9 @@ export default function CalibratePage() {
             </div>
           )}
           {submitting && (
-            <div className="text-center text-ink-400 text-sm animate-pulse">Saving results...</div>
+            <div className="text-center text-ink-400 text-sm animate-pulse">
+              Saving results...
+            </div>
           )}
         </div>
 
@@ -389,18 +455,24 @@ export default function CalibratePage() {
           <div className="card p-4">
             <div className="section-label mb-3">How Calibration Works</div>
             <div className="space-y-3 text-xs text-ink-400 leading-relaxed">
-              <p>You play 5 games against Stockfish bots. The bot difficulty adapts based on your results:</p>
+              <p>
+                You play 5 games against Stockfish bots. The bot difficulty
+                adapts based on your results:
+              </p>
               <div className="space-y-1.5">
                 <div className="flex items-center gap-2">
-                  <span className="text-green-400">Win &rarr;</span> Next bot is harder
+                  <span className="text-green-400">Win &rarr;</span> Next bot is
+                  harder
                 </div>
                 <div className="flex items-center gap-2">
-                  <span className="text-red-400">Loss &rarr;</span> Next bot is easier
+                  <span className="text-red-400">Loss &rarr;</span> Next bot is
+                  easier
                 </div>
               </div>
               {touchMode && (
                 <p className="text-gold/70 border-t border-ink-700 pt-2 mt-2">
-                  Tap a piece to select it, then tap a highlighted square to move.
+                  Tap a piece to select it, then tap a highlighted square to
+                  move.
                 </p>
               )}
             </div>
