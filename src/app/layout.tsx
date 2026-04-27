@@ -50,7 +50,7 @@ export async function Footer() {
           </span>
         </div>
         <div className="text-center">
-          {seasonLabel} · All records preserved forever.
+          ·The Board Remembers All·
         </div>
         <div className="flex items-center gap-4">
           <a
