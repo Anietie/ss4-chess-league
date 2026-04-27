@@ -1,4 +1,5 @@
 import { BadgeWall } from "@/components/profile/BadgeWall";
+import { ProfileActions } from "@/components/profile/ProfileActions";
 import { RatingChart } from "@/components/profile/RatingChart";
 import { createServerClient } from "@/lib/supabase";
 import { formatRating } from "@/lib/utils";
@@ -56,6 +57,19 @@ export default async function ProfilePage({
   const draws =
     recentGames?.filter((g: any) => g.result === "0.5-0.5").length ?? 0;
   const losses = (recentGames?.length ?? 0) - wins - draws;
+
+  // Check if this is the current user's profile
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  const { data: currentPlayer } = user
+    ? await supabase
+        .from("players")
+        .select("id")
+        .eq("auth_user_id", user.id)
+        .single()
+    : { data: null };
+  const isOwnProfile = currentPlayer?.id === id;
 
   return (
     <div className="max-w-4xl mx-auto px-4 py-10 space-y-8">
@@ -125,6 +139,12 @@ export default async function ProfilePage({
             <div className="text-xs text-ink-400">Losses</div>
           </div>
         </div>
+
+        <ProfileActions
+          playerId={id}
+          playerName={player.full_name}
+          isOwnProfile={isOwnProfile}
+        />
       </div>
 
       {/* Rating Chart */}
