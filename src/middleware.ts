@@ -5,8 +5,9 @@ const PROTECTED = ['/dashboard', '/play', '/admin'];
 
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
+  const isHome = pathname === '/';
   const isProtected = PROTECTED.some(p => pathname.startsWith(p));
-  if (!isProtected) return NextResponse.next();
+  if (!isProtected && !isHome) return NextResponse.next();
 
   const response = NextResponse.next({ request: { headers: request.headers } });
   const supabase = createServerClient(
@@ -27,7 +28,13 @@ export async function middleware(request: NextRequest) {
 
   const { data: { user } } = await supabase.auth.getUser();
 
+  // Redirect logged-in users from home to dashboard
+  if (isHome && user) {
+    return NextResponse.redirect(new URL('/dashboard', request.url));
+  }
+
   if (!user) {
+    if (isHome) return NextResponse.next();
     const loginUrl = new URL('/auth/login', request.url);
     loginUrl.searchParams.set('next', pathname);
     return NextResponse.redirect(loginUrl);
@@ -44,5 +51,5 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ['/dashboard/:path*', '/play/:path*', '/admin/:path*'],
+  matcher: ['/', '/dashboard/:path*', '/play/:path*', '/admin/:path*'],
 };
