@@ -78,18 +78,23 @@ export async function POST(req: NextRequest) {
   const { data: season } = await supabase.from('seasons')
     .select('id').eq('id', player.joining_season).single();
  
-  await supabase.from('games').insert({
+  const { error: insertError } = await supabase.from('games').insert({
     season: season?.id ?? 1,
     league: 'calibration',
     tier: 'n_a',
     competition_phase: 'calibration',
     white_player_id: player_id,
-    black_player_id: player_id, // placeholder — bot has no player record
+    black_player_id: player_id, // same UUID allowed for calibration — see DB constraint
     result,
     pgn: pgn ?? '',
     white_rating_before: bot_elo,
     time_control: '600+0',
   });
+
+  if (insertError) {
+    console.error('[calibration] game insert failed:', insertError.message);
+    return NextResponse.json({ error: 'Failed to record game: ' + insertError.message }, { status: 500 });
+  }
  
   const newGameCount = (player.calibration_games_played ?? 0) + 1;
  
@@ -114,7 +119,8 @@ export async function POST(req: NextRequest) {
       totalWeight += w;
     });
  
-    const seedRating = clamp(Math.round(weightedSum / totalWeight), 600, 2400);
+    const rawSeed = totalWeight > 0 ? weightedSum / totalWeight : 1000;
+    const seedRating = clamp(Math.round(rawSeed), 600, 2400);
  
     await supabase.from('players').update({
       calibration_games_played: newGameCount,
