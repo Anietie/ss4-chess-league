@@ -50,7 +50,7 @@ export async function Footer() {
           </span>
         </div>
         <div className="text-center">
-          ·The Board Remembers All·
+          The Board Remembers
         </div>
         <div className="flex items-center gap-4">
           <a
