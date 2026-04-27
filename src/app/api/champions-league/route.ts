@@ -1,17 +1,11 @@
 import { drawCLGroups } from "@/lib/fixture-generator";
-import { createClient } from "@supabase/supabase-js";
+import { createServerClient } from "@/lib/supabase";
 import { NextRequest, NextResponse } from "next/server";
-
-const adminSupabase = () =>
-  createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!,
-  );
 
 // GET /api/champions-league?season=1
 export async function GET(req: NextRequest) {
   const season = new URL(req.url).searchParams.get("season") ?? "1";
-  const supabase = adminSupabase();
+  const supabase = createServerClient();
 
   const [{ data: clData }, { data: coefficients }, { data: games }] =
     await Promise.all([
@@ -57,7 +51,7 @@ export async function POST(req: NextRequest) {
 
   const body = await req.json();
   const { action, season } = body;
-  const supabase = adminSupabase();
+  const supabase = createServerClient();
 
   // ── draw_groups ───────────────────────────────────────────────
   if (action === "draw_groups") {
