@@ -2,15 +2,15 @@
 import { supabase } from "@/lib/supabase";
 import { formatRating } from "@/lib/utils";
 import {
-  Bell,
-  Crown,
-  Home,
-  LayoutDashboard,
-  LogOut,
-  Menu,
-  Star,
-  Users,
-  X,
+    Bell,
+    Crown,
+    Home,
+    LayoutDashboard,
+    LogOut,
+    Menu,
+    Star,
+    Users,
+    X,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
@@ -102,6 +102,7 @@ export function NavBar() {
   }, []);
 
   const handleSignOut = async () => {
+    setShowSignOutConfirm(false);
     await supabase.auth.signOut();
     localStorage.removeItem("player_id");
     setPlayer(null);
@@ -276,7 +277,7 @@ export function NavBar() {
 
       {/* Sign out confirmation dialog */}
       {showSignOutConfirm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
+        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/50 backdrop-blur-sm">
           <div className="card p-6 max-w-sm mx-4 space-y-4">
             <h2 className="font-display text-xl font-bold text-chalk">
               Sign Out?
