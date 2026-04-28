@@ -1,5 +1,6 @@
 "use client";
 import { supabase } from "@/lib/supabase";
+import { createPortal } from "react-dom";
 import { formatRating } from "@/lib/utils";
 import {
     Bell,
@@ -30,6 +31,9 @@ export function NavBar() {
   const [unread, setUnread] = useState(0);
   const [leagues, setLeagues] = useState<string[]>([]);
   const [showSignOutConfirm, setShowSignOutConfirm] = useState(false);
+  const [mounted, setMounted] = useState(false);
+
+  useEffect(() => { setMounted(true); }, []);
 
   useEffect(() => {
     supabase
@@ -102,12 +106,13 @@ export function NavBar() {
   }, []);
 
   const handleSignOut = async () => {
+    // Dismiss modal + menu synchronously before any async work
     setShowSignOutConfirm(false);
+    setOpen(false);
     await supabase.auth.signOut();
     localStorage.removeItem("player_id");
     setPlayer(null);
     setUnread(0);
-    setOpen(false);
     router.push("/auth/login");
   };
 
@@ -147,6 +152,7 @@ export function NavBar() {
         : "league-pill-cl";
 
   return (
+    <>
     <nav className="sticky top-0 z-50 bg-ink-900/90 backdrop-blur-sm border-b border-ink-700">
       <div className="max-w-7xl mx-auto px-4 h-14 flex items-center justify-between gap-4">
         <Link href="/" className="flex items-center gap-2 flex-shrink-0">
@@ -275,31 +281,27 @@ export function NavBar() {
         </div>
       )}
 
-      {/* Sign out confirmation dialog */}
-      {showSignOutConfirm && (
-        <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/50 backdrop-blur-sm">
-          <div className="card p-6 max-w-sm mx-4 space-y-4">
-            <h2 className="font-display text-xl font-bold text-chalk">
-              Sign Out?
-            </h2>
-            <p className="text-sm text-ink-300">
-              Are you sure you want to sign out? You'll need to sign in again to
-              access your account.
-            </p>
-            <div className="flex gap-3 justify-end">
-              <button
-                onClick={() => setShowSignOutConfirm(false)}
-                className="btn-ghost"
-              >
-                Cancel
-              </button>
-              <button onClick={handleSignOut} className="btn-gold">
-                Sign Out
-              </button>
-            </div>
+      </nav>
+
+    {/* Portal: escapes nav's backdrop-filter stacking context */}
+    {mounted && showSignOutConfirm && createPortal(
+      <div
+        className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/50 backdrop-blur-sm"
+        onClick={(e) => { if (e.target === e.currentTarget) setShowSignOutConfirm(false); }}
+      >
+        <div className="card p-6 max-w-sm mx-4 space-y-4">
+          <h2 className="font-display text-xl font-bold text-chalk">Sign Out?</h2>
+          <p className="text-sm text-ink-300">
+            Are you sure you want to sign out? You'll need to sign in again to access your account.
+          </p>
+          <div className="flex gap-3 justify-end">
+            <button onClick={() => setShowSignOutConfirm(false)} className="btn-ghost">Cancel</button>
+            <button onClick={handleSignOut} className="btn-gold">Sign Out</button>
           </div>
         </div>
-      )}
-    </nav>
+      </div>,
+      document.body
+    )}
+    </>
   );
 }
