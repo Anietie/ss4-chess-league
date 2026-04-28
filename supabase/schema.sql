@@ -278,113 +278,6 @@ CREATE TABLE IF NOT EXISTS conduct_violations (
 );
 
 -- ─────────────────────────────────────────────────────────────
--- SOUND & FEATURE PREFERENCES
--- ─────────────────────────────────────────────────────────────
-DO $$
-BEGIN
-  IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
-                 WHERE table_name = 'players' AND column_name = 'sound_enabled') THEN
-    ALTER TABLE players ADD COLUMN sound_enabled BOOLEAN NOT NULL DEFAULT FALSE;
-  END IF;
-  
-  IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
-                 WHERE table_name = 'players' AND column_name = 'sound_volume') THEN
-    ALTER TABLE players ADD COLUMN sound_volume INTEGER NOT NULL DEFAULT 70 CHECK (sound_volume >= 0 AND sound_volume <= 100);
-  END IF;
-
-  IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
-                 WHERE table_name = 'players' AND column_name = 'sound_move') THEN
-    ALTER TABLE players ADD COLUMN sound_move BOOLEAN NOT NULL DEFAULT TRUE;
-  END IF;
-
-  IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
-                 WHERE table_name = 'players' AND column_name = 'sound_capture') THEN
-    ALTER TABLE players ADD COLUMN sound_capture BOOLEAN NOT NULL DEFAULT TRUE;
-  END IF;
-
-  IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
-                 WHERE table_name = 'players' AND column_name = 'sound_check') THEN
-    ALTER TABLE players ADD COLUMN sound_check BOOLEAN NOT NULL DEFAULT TRUE;
-  END IF;
-
-  IF NOT EXISTS (SELECT 1 FROM information_schema.columns 
-                 WHERE table_name = 'players' AND column_name = 'sound_game_end') THEN
-    ALTER TABLE players ADD COLUMN sound_game_end BOOLEAN NOT NULL DEFAULT TRUE;
-  END IF;
-END$$;
-
--- ─────────────────────────────────────────────────────────────
--- CASUAL GAMES (for non-league play)
--- ─────────────────────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS casual_games (
-  id                    UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  challenger_id         UUID NOT NULL REFERENCES players(id) ON DELETE CASCADE,
-  opponent_id           UUID NOT NULL REFERENCES players(id) ON DELETE CASCADE,
-  status                TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','accepted','in_progress','completed','declined','cancelled')),
-  is_rated              BOOLEAN NOT NULL DEFAULT FALSE,
-  time_control          TEXT NOT NULL DEFAULT '600+5',
-  
-  -- Game details (filled after acceptance)
-  game_id               UUID REFERENCES games(id) ON DELETE SET NULL,
-  white_player_id       UUID REFERENCES players(id),
-  black_player_id       UUID REFERENCES players(id),
-  
-  -- Ratings before game
-  white_rating_before   FLOAT,
-  black_rating_before   FLOAT,
-  white_rd_before       FLOAT,
-  black_rd_before       FLOAT,
-  
-  -- Results
-  result                TEXT CHECK (result IN ('1-0','0-1','0.5-0.5','abandoned',NULL)),
-  white_rating_after    FLOAT,
-  black_rating_after    FLOAT,
-  white_rd_after        FLOAT,
-  black_rd_after        FLOAT,
-  
-  pgn                   TEXT,
-  moves_json            JSONB,
-  game_state_fen        TEXT,
-  white_time_remaining  INTEGER,
-  black_time_remaining  INTEGER,
-  is_live               BOOLEAN NOT NULL DEFAULT FALSE,
-  room_id               TEXT UNIQUE,
-  
-  played_at             TIMESTAMPTZ,
-  created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  CONSTRAINT different_casual_players CHECK (challenger_id != opponent_id)
-);
-
--- ─────────────────────────────────────────────────────────────
--- PLAYER FOLLOWS (for friends/follow system)
--- ─────────────────────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS player_follows (
-  id                    UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  follower_id           UUID NOT NULL REFERENCES players(id) ON DELETE CASCADE,
-  following_id          UUID NOT NULL REFERENCES players(id) ON DELETE CASCADE,
-  is_blocked            BOOLEAN NOT NULL DEFAULT FALSE,
-  created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  CONSTRAINT different_follow_players CHECK (follower_id != following_id),
-  CONSTRAINT unique_follow UNIQUE (follower_id, following_id)
-);
-
--- ─────────────────────────────────────────────────────────────
--- SPECTATOR SESSIONS (optional - for tracking who's watching)
--- ─────────────────────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS spectator_sessions (
-  id                    UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  game_id               UUID NOT NULL REFERENCES games(id) ON DELETE CASCADE,
-  spectator_id          UUID REFERENCES players(id) ON DELETE SET NULL,
-  access_token          VARCHAR(32) NOT NULL UNIQUE,
-  is_private            BOOLEAN NOT NULL DEFAULT TRUE,
-  joined_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  left_at               TIMESTAMPTZ,
-  created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
--- ─────────────────────────────────────────────────────────────
 -- INDEXES
 -- ─────────────────────────────────────────────────────────────
 CREATE INDEX IF NOT EXISTS idx_games_season     ON games(season);
@@ -395,19 +288,6 @@ CREATE INDEX IF NOT EXISTS idx_games_live       ON games(is_live) WHERE is_live 
 CREATE INDEX IF NOT EXISTS idx_standings_season ON standings(season, league, tier);
 CREATE INDEX IF NOT EXISTS idx_standings_player ON standings(player_id);
 CREATE INDEX IF NOT EXISTS idx_rating_history   ON rating_history(player_id);
--- Casual games indexes
-CREATE INDEX IF NOT EXISTS idx_casual_games_challenger ON casual_games(challenger_id);
-CREATE INDEX IF NOT EXISTS idx_casual_games_opponent   ON casual_games(opponent_id);
-CREATE INDEX IF NOT EXISTS idx_casual_games_status     ON casual_games(status) WHERE status IN ('pending','accepted');
-CREATE INDEX IF NOT EXISTS idx_casual_games_rated      ON casual_games(is_rated) WHERE is_rated = TRUE;
--- Follows indexes
-CREATE INDEX IF NOT EXISTS idx_follows_follower   ON player_follows(follower_id);
-CREATE INDEX IF NOT EXISTS idx_follows_following  ON player_follows(following_id);
-CREATE INDEX IF NOT EXISTS idx_follows_blocked    ON player_follows(is_blocked) WHERE is_blocked = TRUE;
--- Spectator indexes
-CREATE INDEX IF NOT EXISTS idx_spectator_game     ON spectator_sessions(game_id);
-CREATE INDEX IF NOT EXISTS idx_spectator_player   ON spectator_sessions(spectator_id);
-CREATE INDEX IF NOT EXISTS idx_spectator_token    ON spectator_sessions(access_token);
 CREATE INDEX IF NOT EXISTS idx_notifs_player    ON notifications(player_id, is_read);
 CREATE INDEX IF NOT EXISTS idx_players_league   ON players(home_league);
 CREATE INDEX IF NOT EXISTS idx_players_tier     ON players(current_tier);
@@ -421,9 +301,6 @@ ALTER TABLE standings        ENABLE ROW LEVEL SECURITY;
 ALTER TABLE notifications    ENABLE ROW LEVEL SECURITY;
 ALTER TABLE player_badges    ENABLE ROW LEVEL SECURITY;
 ALTER TABLE rating_history   ENABLE ROW LEVEL SECURITY;
-ALTER TABLE casual_games     ENABLE ROW LEVEL SECURITY;
-ALTER TABLE player_follows   ENABLE ROW LEVEL SECURITY;
-ALTER TABLE spectator_sessions ENABLE ROW LEVEL SECURITY;
 
 DO $$
 BEGIN
@@ -520,67 +397,6 @@ BEGIN
         SELECT id FROM players WHERE auth_user_id = auth.uid()
       ));
   END IF;
-
-  -- Casual Games Policies
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_policies
-    WHERE policyname = 'Public read casual_games'
-      AND tablename = 'casual_games'
-  ) THEN
-    CREATE POLICY "Public read casual_games" ON casual_games FOR SELECT USING (TRUE);
-  END IF;
-
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_policies
-    WHERE policyname = 'Users manage own casual_games'
-      AND tablename = 'casual_games'
-  ) THEN
-    CREATE POLICY "Users manage own casual_games" ON casual_games
-      FOR ALL USING (
-        challenger_id IN (SELECT id FROM players WHERE auth_user_id = auth.uid()) OR
-        opponent_id IN (SELECT id FROM players WHERE auth_user_id = auth.uid())
-      );
-  END IF;
-
-  -- Player Follows Policies
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_policies
-    WHERE policyname = 'Public read follows'
-      AND tablename = 'player_follows'
-  ) THEN
-    CREATE POLICY "Public read follows" ON player_follows FOR SELECT USING (is_blocked = FALSE);
-  END IF;
-
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_policies
-    WHERE policyname = 'Users manage own follows'
-      AND tablename = 'player_follows'
-  ) THEN
-    CREATE POLICY "Users manage own follows" ON player_follows
-      FOR ALL USING (
-        follower_id IN (SELECT id FROM players WHERE auth_user_id = auth.uid())
-      );
-  END IF;
-
-  -- Spectator Sessions Policies
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_policies
-    WHERE policyname = 'Public read spectator_sessions'
-      AND tablename = 'spectator_sessions'
-  ) THEN
-    CREATE POLICY "Public read spectator_sessions" ON spectator_sessions FOR SELECT USING (TRUE);
-  END IF;
-
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_policies
-    WHERE policyname = 'Users manage own spectator_sessions'
-      AND tablename = 'spectator_sessions'
-  ) THEN
-    CREATE POLICY "Users manage own spectator_sessions" ON spectator_sessions
-      FOR ALL USING (
-        spectator_id IN (SELECT id FROM players WHERE auth_user_id = auth.uid())
-      );
-  END IF;
 END$$;
 
 -- ─────────────────────────────────────────────────────────────
@@ -615,22 +431,6 @@ BEGIN
       AND tgrelid = 'standings'::regclass
   ) THEN
     CREATE TRIGGER standings_updated_at BEFORE UPDATE ON standings FOR EACH ROW EXECUTE FUNCTION update_updated_at();
-  END IF;
-
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_trigger
-    WHERE tgname = 'casual_games_updated_at'
-      AND tgrelid = 'casual_games'::regclass
-  ) THEN
-    CREATE TRIGGER casual_games_updated_at BEFORE UPDATE ON casual_games FOR EACH ROW EXECUTE FUNCTION update_updated_at();
-  END IF;
-
-  IF NOT EXISTS (
-    SELECT 1 FROM pg_trigger
-    WHERE tgname = 'player_follows_updated_at'
-      AND tgrelid = 'player_follows'::regclass
-  ) THEN
-    CREATE TRIGGER player_follows_updated_at BEFORE UPDATE ON player_follows FOR EACH ROW EXECUTE FUNCTION update_updated_at();
   END IF;
 END$$;
 
