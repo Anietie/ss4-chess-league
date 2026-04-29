@@ -153,6 +153,23 @@ export async function PATCH(
     .update({ status: 'accepted', game_id: game.id })
     .eq('id', id);
 
+  // Push challenge_accepted to the challenger's socket room
+  // This is how the challenger gets redirected without polling
+  try {
+    const socketUrl = process.env.NEXT_PUBLIC_SOCKET_URL || 'http://localhost:3001';
+    await fetch(`${socketUrl}/notify-challenge-accepted`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-internal-secret': process.env.INTERNAL_API_SECRET || '',
+      },
+      body: JSON.stringify({ challenge_id: id, game_id: game.id }),
+    });
+  } catch (e) {
+    // Non-fatal: challenger will catch it via polling fallback
+    console.warn('[casual] socket notify failed:', (e as Error).message);
+  }
+
   // Notify challenger
   const [tcBase] = challenge.time_control.split('+');
   const minutes = Math.floor(Number(tcBase) / 60);

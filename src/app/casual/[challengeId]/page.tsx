@@ -27,26 +27,30 @@ export default function ChallengeAcceptPage() {
     const playerId = localStorage.getItem('player_id');
     if (!playerId) return;
 
-    const { io } = require('socket.io-client');
-    const sock = io(process.env.NEXT_PUBLIC_SOCKET_URL || 'http://localhost:3001');
-    sock.emit('join_challenge', { challenge_id: challengeId, player_id: playerId });
-    sock.on('challenge_accepted', ({ game_id }: { game_id: string }) => {
-      sock.disconnect(); clearInterval(poll);
-      router.push(`/play/${game_id}`);
+    let sock: any = null;
+    let poll: ReturnType<typeof setInterval>;
+
+    import('socket.io-client').then(({ io }) => {
+      sock = io(process.env.NEXT_PUBLIC_SOCKET_URL || 'http://localhost:3001');
+      sock.emit('join_challenge', { challenge_id: challengeId, player_id: playerId });
+      sock.on('challenge_accepted', ({ game_id }: { game_id: string }) => {
+        sock.disconnect(); clearInterval(poll);
+        router.push(`/play/${game_id}`);
+      });
     });
 
-    const poll = setInterval(async () => {
+    poll = setInterval(async () => {
       try {
         const r = await fetch(`/api/casual/${challengeId}`);
         const d = await r.json();
         if (d.challenge?.status === 'accepted' && d.challenge?.game_id) {
-          sock.disconnect(); clearInterval(poll);
+          sock?.disconnect(); clearInterval(poll);
           router.push(`/play/${d.challenge.game_id}`);
         }
       } catch {}
     }, 3000);
 
-    return () => { sock.disconnect(); clearInterval(poll); };
+    return () => { sock?.disconnect(); clearInterval(poll); };
   }, [challengeId, router]);
 
   async function loadChallenge() {
