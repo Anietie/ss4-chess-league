@@ -1,5 +1,6 @@
 "use client";
-import { Clock, type ClockHandle } from "@/components/chess/Clock";
+import { SoundToggle } from "@/components/chess/SoundToggle";
+import { useSound } from "@/hooks/useSound";
 import { BOT_LEVELS } from "@/lib/chess-com-api";
 import { supabase } from "@/lib/supabase";
 import { Chess, type Move } from "chess.js";
@@ -93,8 +94,8 @@ interface CalState {
   calibrationComplete: boolean;
   gamesPlayed: number;
   remainingGames: number;
-  botElo: number;      // current bot elo (from current_bot_elo / next_bot_elo)
-  levelIndex: number;  // stockfish skill index
+  botElo: number; // current bot elo (from current_bot_elo / next_bot_elo)
+  levelIndex: number; // stockfish skill index
   seedRating?: number;
 }
 
@@ -104,15 +105,14 @@ function apiResultCode(r: "win" | "loss" | "draw"): string {
   return "0.5-0.5";
 }
 
-// 10-minute game, no increment
-const GAME_TIME_MS = 10 * 60 * 1000;
-
 export default function CalibratePage() {
   const [chess] = useState(() => new Chess());
   const [fen, setFen] = useState(chess.fen());
   const [cal, setCal] = useState<CalState | null>(null);
   const [gameActive, setGameActive] = useState(false);
-  const [gameResult, setGameResult] = useState<"win" | "loss" | "draw" | null>(null);
+  const [gameResult, setGameResult] = useState<"win" | "loss" | "draw" | null>(
+    null,
+  );
   const [thinking, setThinking] = useState(false);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -122,28 +122,12 @@ export default function CalibratePage() {
   const [moveFrom, setMoveFrom] = useState<string | null>(null);
   const [optionSquares, setOptionSquares] = useState<Record<string, any>>({});
 
-  // ── Clock state ─────────────────────────────────────────────────────────
-  // We re-mount each clock per game by tracking a gameKey. This resets
-  // initialMs cleanly without manual ref juggling.
-  const [gameKey, setGameKey] = useState(0);
-  const [whiteInitialMs, setWhiteInitialMs] = useState(GAME_TIME_MS);
-  const [blackInitialMs, setBlackInitialMs] = useState(GAME_TIME_MS);
-
-  const whiteClockRef = useRef<ClockHandle>(null);
-  const blackClockRef = useRef<ClockHandle>(null);
-
-  // White clock runs when it is the player's turn (not thinking, not over).
-  // Black clock runs while Stockfish is "thinking".
-  const whiteClockRunning = gameActive && !thinking && chess.turn() === "w";
-  const blackClockRunning = gameActive && thinking;
-
-  // ── Anti-cheat: track move timestamps to detect impossible speed ─────────
-  const moveTimestampsRef = useRef<number[]>([]);
-
   const playerId =
     typeof window !== "undefined" ? localStorage.getItem("player_id") : null;
 
-  const stockfishSkill = cal?.levelIndex ?? 3;
+  // Stockfish skill level: level_index from API → skill 0-20
+  const { play, enabled: soundEnabled, toggle: toggleSound } = useSound();
+  const stockfishSkill = cal?.levelIndex ?? 3; // hook handles *2 scaling internally
   const { getBestMove } = useStockfish(stockfishSkill);
 
   useEffect(() => {
@@ -179,19 +163,15 @@ export default function CalibratePage() {
     setFen(chess.fen());
     setMoveFrom(null);
     setOptionSquares({});
-    setGameResult(null);
-    moveTimestampsRef.current = [];
-
-    // Bump gameKey so Clock components remount with fresh initialMs
-    setWhiteInitialMs(GAME_TIME_MS);
-    setBlackInitialMs(GAME_TIME_MS);
-    setGameKey(k => k + 1);
-
     setGameActive(true);
+    setGameResult(null);
   };
 
   const endCalibrationGame = async (result: "win" | "loss" | "draw") => {
     setGameActive(false);
+    if (result === "win") play("win");
+    else if (result === "loss") play("loss");
+    else play("draw");
     setGameResult(result);
     setMoveFrom(null);
     setOptionSquares({});
@@ -203,18 +183,12 @@ export default function CalibratePage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           player_id: playerId,
-          bot_elo: cal?.botElo ?? 1000,
-          result: apiResultCode(result),
+          bot_elo: cal?.botElo ?? 1000, // API expects bot_elo (number)
+          result: apiResultCode(result), // API expects '1-0'/'0-1'/'0.5-0.5'
           pgn: chess.pgn(),
-          move_timestamps: moveTimestampsRef.current,
         }),
       });
       const d = await res.json();
-
-      if (d.error) {
-        // Integrity check rejected on server — treat as loss to prevent exploitation
-        console.warn("[calibration] submission rejected:", d.error);
-      }
 
       if (d.complete) {
         setCal(
@@ -245,7 +219,10 @@ export default function CalibratePage() {
   };
 
   function getMoveOptions(square: string) {
-    const moves = chess.moves({ square: square as any, verbose: true }) as Move[];
+    const moves = chess.moves({
+      square: square as any,
+      verbose: true,
+    }) as Move[];
     if (moves.length === 0) {
       setOptionSquares({});
       return false;
@@ -264,28 +241,39 @@ export default function CalibratePage() {
     return true;
   }
 
-  async function handleMove(m: { from: string; to: string; promotion?: string }) {
+  async function handleMove(m: {
+    from: string;
+    to: string;
+    promotion?: string;
+  }) {
     try {
       const result = chess.move(m);
       if (!result) return false;
-
-      // Record move timestamp for anti-cheat
-      moveTimestampsRef.current.push(Date.now());
-
+      // Player move sound
+      if (result.promotion) play("promote");
+      else if (result.flags.includes("k") || result.flags.includes("q")) play("castle");
+      else if (chess.isCheck()) play("check");
+      else if (result.captured) play("capture");
+      else play("move");
       setMoveFrom(null);
       setOptionSquares({});
       setFen(chess.fen());
-
       if (chess.isGameOver()) {
         endCalibrationGame(chess.isCheckmate() ? "win" : "draw");
         return true;
       }
-
-      // White just moved → black (Stockfish) thinks
       setThinking(true);
       const best = await getBestMove(chess.fen());
       if (best) {
-        chess.move(best);
+        const botResult = chess.move(best);
+        // Bot move sound
+        if (botResult) {
+          if (botResult.promotion) play("promote");
+          else if (botResult.flags.includes("k") || botResult.flags.includes("q")) play("castle");
+          else if (chess.isCheck()) play("check");
+          else if (botResult.captured) play("capture");
+          else play("move");
+        }
         setFen(chess.fen());
         if (chess.isGameOver())
           endCalibrationGame(chess.isCheckmate() ? "loss" : "draw");
@@ -309,7 +297,10 @@ export default function CalibratePage() {
       setOptionSquares({});
       return;
     }
-    const moves = chess.moves({ square: moveFrom as any, verbose: true }) as Move[];
+    const moves = chess.moves({
+      square: moveFrom as any,
+      verbose: true,
+    }) as Move[];
     if (moves.some((m) => m.to === square)) {
       handleMove({ from: moveFrom, to: square, promotion: "q" });
     } else {
@@ -327,7 +318,6 @@ export default function CalibratePage() {
     return true;
   };
 
-  // ── Loading / guard screens ───────────────────────────────────────────────
   if (loading)
     return (
       <div className="max-w-5xl mx-auto px-4 py-16 text-center text-ink-400 animate-pulse">
@@ -414,11 +404,10 @@ export default function CalibratePage() {
 
       <div className="grid grid-cols-1 lg:grid-cols-[1fr_280px] gap-6">
         <div className="space-y-3">
-
-          {/* ── Bot header + black clock ──────────────────────────────────── */}
+          {/* Bot header — name only, no Elo shown */}
           <div className="card p-3 flex items-center gap-3">
             <Bot size={20} className="text-gold" />
-            <div className="flex-1">
+            <div>
               <div className="font-medium text-chalk text-sm">
                 {currentBot.name}
               </div>
@@ -427,22 +416,10 @@ export default function CalibratePage() {
               </div>
             </div>
             {thinking && (
-              <span className="text-xs text-ink-400 animate-pulse mr-2">
+              <span className="ml-auto text-xs text-ink-400 animate-pulse">
                 Thinking...
               </span>
             )}
-            {/* Black / bot clock */}
-            <Clock
-              key={`black-${gameKey}`}
-              ref={blackClockRef}
-              side="black"
-              initialMs={blackInitialMs}
-              isRunning={blackClockRunning}
-              onFlag={() => {
-                // Bot flags → player wins on time
-                if (gameActive) endCalibrationGame("win");
-              }}
-            />
           </div>
 
           <div className="board-wrapper touch-none select-none">
@@ -453,6 +430,7 @@ export default function CalibratePage() {
                 onSquareClick={onSquareClick}
                 customSquareStyles={optionSquares}
                 boardOrientation="white"
+                // Disable drag on touch — tap-to-move handles mobile interaction
                 arePiecesDraggable={gameActive && !thinking && !touchMode}
                 customDarkSquareStyle={{ backgroundColor: "#4a6080" }}
                 customLightSquareStyle={{ backgroundColor: "#b0bcce" }}
@@ -461,27 +439,16 @@ export default function CalibratePage() {
             )}
           </div>
 
-          {/* ── Player row + white clock ──────────────────────────────────── */}
           <div className="card p-3 flex items-center gap-3">
             <div className="w-10 h-10 rounded-lg bg-gold/20 border border-gold/30 flex items-center justify-center text-sm font-bold text-gold">
               You
             </div>
-            <div className="flex-1">
+            <div>
               <div className="font-medium text-chalk text-sm">You (White)</div>
-              <div className="text-xs text-ink-400">10 min · no increment</div>
+              <div className="text-xs text-ink-400">
+                10 minutes · no increment
+              </div>
             </div>
-            {/* White / player clock */}
-            <Clock
-              key={`white-${gameKey}`}
-              ref={whiteClockRef}
-              side="white"
-              initialMs={whiteInitialMs}
-              isRunning={whiteClockRunning}
-              onFlag={() => {
-                // Player flags → loss on time
-                if (gameActive) endCalibrationGame("loss");
-              }}
-            />
           </div>
 
           {!gameActive && !gameResult && (
@@ -493,6 +460,7 @@ export default function CalibratePage() {
             </button>
           )}
 
+          <div className="flex justify-end mb-1"><SoundToggle enabled={soundEnabled} onToggle={toggleSound} /></div>
           {gameActive && (
             <button
               onClick={() => endCalibrationGame("loss")}
@@ -552,9 +520,6 @@ export default function CalibratePage() {
                   easier
                 </div>
               </div>
-              <p className="border-t border-ink-700 pt-2 mt-2">
-                Each game is 10 minutes. Running out of time counts as a loss.
-              </p>
               {touchMode && (
                 <p className="text-gold/70 border-t border-ink-700 pt-2 mt-2">
                   Tap a piece to select it, then tap a highlighted square to

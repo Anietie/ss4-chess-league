@@ -1,4 +1,6 @@
 "use client";
+import { SoundToggle } from "@/components/chess/SoundToggle";
+import { useSound } from "@/hooks/useSound";
 import { supabase } from "@/lib/supabase";
 import { Chess } from "chess.js";
 import {
@@ -117,6 +119,7 @@ export default function GameRoomPage() {
   const [touchMode] = useState(isTouchDevice);
   const [drawOffered, setDrawOffered] = useState(false);
   const [spectators, setSpectators] = useState(0);
+  const { play, enabled: soundEnabled, toggle: toggleSound } = useSound();
 
   // TAP-TO-MOVE STATE
   const [moveFrom, setMoveFrom] = useState<any>(null);
@@ -188,18 +191,17 @@ export default function GameRoomPage() {
 
       sock.on("move_made", (d) => {
         chess.load(d.fen);
+        const history = chess.history({ verbose: true });
+        const lastMove = history[history.length - 1];
+        if (lastMove?.promotion) play("promote");
+        else if (lastMove?.flags?.includes("k") || lastMove?.flags?.includes("q")) play("castle");
+        else if (chess.isCheck()) play("check");
+        else if (lastMove?.captured) play("capture");
+        else play("move");
         setFen(d.fen);
         setMoves(chess.history());
-        setWhite((p) => ({
-          ...p,
-          timeMs: d.white_time,
-          isActive: d.current_turn === "w",
-        }));
-        setBlack((p) => ({
-          ...p,
-          timeMs: d.black_time,
-          isActive: d.current_turn === "b",
-        }));
+        setWhite((p) => ({ ...p, timeMs: d.white_time, isActive: d.current_turn === "w" }));
+        setBlack((p) => ({ ...p, timeMs: d.black_time, isActive: d.current_turn === "b" }));
       });
 
       sock.on("game_ended", (d) => {
@@ -207,6 +209,12 @@ export default function GameRoomPage() {
         setResult(d.result);
         setWhite((p) => ({ ...p, isActive: false }));
         setBlack((p) => ({ ...p, isActive: false }));
+        if (myColorRef.current) {
+          const iWon = (d.result === "1-0" && myColorRef.current === "white") || (d.result === "0-1" && myColorRef.current === "black");
+          if (iWon) play("win");
+          else if (d.result === "0.5-0.5") play("draw");
+          else play("loss");
+        }
       });
       sock.on("draw_offered", ({ by_player_id }) => {
         if (by_player_id !== myPlayerId) setDrawOffered(true);
@@ -326,8 +334,14 @@ export default function GameRoomPage() {
             </span>
           )}
         </div>
-        <div className="flex items-center gap-2 text-xs text-ink-400">
-          <Eye size={12} /> {spectators}
+        <div className="flex items-center gap-2">
+          {spectators > 0 && (
+            <a href={`/game/${gameId}/spectate`} target="_blank"
+               className="flex items-center gap-1.5 text-xs text-ink-400 hover:text-chalk transition-colors">
+              <Eye size={12} /> {spectators} watching
+            </a>
+          )}
+          <SoundToggle enabled={soundEnabled} onToggle={toggleSound} />
         </div>
       </div>
 

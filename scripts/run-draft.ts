@@ -2,7 +2,7 @@
  * scripts/run-draft.ts
  * Run: npx tsx scripts/run-draft.ts --season=1
  */
-import { checkLeagueImbalance, runSnakeDraft } from "../src/lib/snake-draft";
+import { checkLeagueBalance, runSnakeDraft } from "../src/lib/snake-draft";
 import { createServerClient } from "../src/lib/supabase";
 
 const supabase = createServerClient();
@@ -29,12 +29,12 @@ async function main() {
 
   console.log(`Players eligible: ${players.length}\n`);
   const result = runSnakeDraft(players);
-  const imbalance = checkLeagueImbalance(result.stats);
+  const imbalance = checkLeagueBalance(result.stats);
 
   console.log("Draft Order:");
   result.assignments.forEach((a) => {
     console.log(
-      `  #${String(a.draft_position).padStart(2)} ${a.full_name.padEnd(30)} → ${a.assigned_league} / ${a.assigned_tier} (${a.seed_rating})`,
+      `  #${String(a.draft_position).padStart(2)} ${a.full_name.padEnd(30)} → ${a.assigned_league} (${a.seed_rating})`,
     );
   });
 
@@ -45,7 +45,7 @@ async function main() {
     );
   });
 
-  if (imbalance.imbalanced) console.warn(`\n⚠️  ${imbalance.details}`);
+  if (!imbalance.balanced) console.warn(`\n⚠️  ${imbalance.details}`);
 
   const confirm = process.argv.includes("--commit");
   if (!confirm) {
@@ -56,7 +56,7 @@ async function main() {
   for (const a of result.assignments) {
     await supabase
       .from("players")
-      .update({ home_league: a.assigned_league, current_tier: a.assigned_tier })
+      .update({ home_league: a.assigned_league, current_tier: "unassigned" })
       .eq("id", a.player_id);
     await supabase.from("season_draft").upsert(
       {
@@ -64,7 +64,7 @@ async function main() {
         player_id: a.player_id,
         draft_position: a.draft_position,
         assigned_league: a.assigned_league,
-        assigned_tier: a.assigned_tier,
+        assigned_tier: "unassigned",
         seed_rating_at_draft: a.seed_rating,
       },
       { onConflict: "season,player_id" },

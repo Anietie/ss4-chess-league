@@ -10,6 +10,7 @@ import {
     LogOut,
     Menu,
     Star,
+    Swords,
     Users,
     X,
 } from "lucide-react";
@@ -121,6 +122,8 @@ export function NavBar() {
 
   const staticLinks = [
     { href: "/", label: "Home", icon: <Home size={13} /> },
+    { href: "/dashboard", label: "Dashboard", icon: <LayoutDashboard size={13} /> },
+    { href: "/casual", label: "Casual Play", icon: <Swords size={13} /> },
     {
       href: "/champions-league",
       label: "Champions League",
