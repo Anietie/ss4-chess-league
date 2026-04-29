@@ -152,12 +152,12 @@ export async function GET(req: NextRequest) {
 
   let query = supabase
     .from('players')
-    .select('id, full_name, home_league, current_tier, ss4_rating, rating_deviation, joining_season, games_played, chess_com_username, calibration_complete')
+    .select('id, full_name, home_league, ss4_rating, rating_deviation, is_provisional, joining_season, games_played, chess_com_username, calibration_complete')
     .eq('is_active', true)
     .order('ss4_rating', { ascending: false });
 
   if (league) query = query.eq('home_league', league);
-  if (tier)   query = query.eq('current_tier', tier);
+  // tier filter removed — tiers no longer exist
   if (search) query = query.ilike('full_name', `%${search}%`);
 
   const { data, error } = await query;

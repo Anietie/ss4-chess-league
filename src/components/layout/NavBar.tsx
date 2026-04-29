@@ -137,8 +137,9 @@ export function NavBar() {
     },
   ];
 
+  // Hide Home link when signed in — dashboard is the home
   const allLinks = [
-    staticLinks[0],
+    ...(player ? [] : [staticLinks[0]]),
     ...leagues.map((l) => ({
       href: `/league/${l}`,
       label: leagueDisplayName(l),

@@ -35,6 +35,9 @@ export default function CasualPage() {
   const [openChallenges, setOpenChallenges] = useState<any[]>([]);
   const [directChallenges, setDirectChallenges] = useState<any[]>([]);
   const [accepting, setAccepting] = useState<string | null>(null);
+  // ID of challenge this player just created — used to subscribe for acceptance
+  const [pendingChallengeId, setPendingChallengeId] = useState<string | null>(null);
+  const [waitingForOpponent, setWaitingForOpponent] = useState(false);
 
   useEffect(() => {
     const id = localStorage.getItem('player_id');
@@ -51,6 +54,25 @@ export default function CasualPage() {
     setOpenChallenges(d.open ?? []);
     setDirectChallenges(d.direct ?? []);
   }
+
+  // Subscribe to pending challenge — auto-redirect when accepted
+  useEffect(() => {
+    if (!pendingChallengeId) return;
+    const channel = supabase
+      .channel(`challenge_${pendingChallengeId}`)
+      .on('postgres_changes', {
+        event: 'UPDATE', schema: 'public',
+        table: 'casual_challenges',
+        filter: `id=eq.${pendingChallengeId}`,
+      }, (payload) => {
+        const updated = payload.new as any;
+        if (updated.status === 'accepted' && updated.game_id) {
+          router.push(`/play/${updated.game_id}`);
+        }
+      })
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [pendingChallengeId, router]);
 
   // Debounced player search
   useEffect(() => {
@@ -129,6 +151,57 @@ export default function CasualPage() {
   const [tcBase, tcInc] = timeControl.split('+').map(Number);
   const tcMins = Math.floor(tcBase / 60);
   const tcLabel = TIME_CONTROLS.find(t => t.value === timeControl)?.label ?? 'Custom';
+
+  // ── Waiting screen (challenger's view after sending challenge) ────────────
+  if (waitingForOpponent) {
+    const [tcBase] = timeControl.split('+').map(Number);
+    const mins = Math.floor(tcBase / 60);
+    return (
+      <main className="min-h-screen flex items-center justify-center px-4">
+        <div className="card p-8 max-w-md w-full text-center space-y-6">
+          <div className="text-5xl animate-pulse">♟</div>
+          <div>
+            <h1 className="font-display text-2xl font-bold text-chalk mb-2">Waiting for opponent…</h1>
+            <p className="text-ink-400 text-sm">
+              {shareLink
+                ? "Share the link below. The game will start automatically when someone accepts."
+                : `Challenge sent! You'll be taken to the board as soon as they accept.`}
+            </p>
+          </div>
+          <div className="flex items-center justify-center gap-4 text-sm">
+            <span className="px-3 py-1.5 bg-ink-800 rounded-lg text-chalk">{mins} min</span>
+            <span className={`px-3 py-1.5 rounded-lg text-xs ${isRated ? 'bg-gold/10 text-gold' : 'bg-ink-800 text-ink-400'}`}>
+              {isRated ? 'Rated' : 'Unrated'}
+            </span>
+          </div>
+          {shareLink && (
+            <div className="p-3 bg-ink-800 rounded-lg border border-gold/30">
+              <p className="text-xs text-ink-400 mb-2">Share link:</p>
+              <div className="flex gap-2 items-center">
+                <code className="flex-1 text-xs text-gold truncate text-left">{shareLink}</code>
+                <button onClick={copyLink} className="text-ink-400 hover:text-chalk flex-shrink-0">
+                  {copied ? <Check size={14} className="text-green-400" /> : <Copy size={14} />}
+                </button>
+              </div>
+            </div>
+          )}
+          <div className="flex gap-3">
+            <button
+              onClick={() => {
+                setWaitingForOpponent(false);
+                setPendingChallengeId(null);
+                setShareLink(null);
+              }}
+              className="btn-ghost flex-1 text-sm"
+            >
+              Cancel
+            </button>
+          </div>
+          <p className="text-xs text-ink-600">You'll be redirected automatically when the game starts.</p>
+        </div>
+      </main>
+    );
+  }
 
   return (
     <main className="max-w-4xl mx-auto px-4 py-8 space-y-8">

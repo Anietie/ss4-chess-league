@@ -21,6 +21,25 @@ export default function ChallengeAcceptPage() {
     loadChallenge();
   }, [challengeId]);
 
+  // If challenger opens their own link, subscribe and auto-redirect on accept
+  useEffect(() => {
+    if (!challengeId) return;
+    const channel = supabase
+      .channel(`challenge_link_${challengeId}`)
+      .on('postgres_changes', {
+        event: 'UPDATE', schema: 'public',
+        table: 'casual_challenges',
+        filter: `id=eq.${challengeId}`,
+      }, (payload) => {
+        const updated = payload.new as any;
+        if (updated.status === 'accepted' && updated.game_id) {
+          router.push(`/play/${updated.game_id}`);
+        }
+      })
+      .subscribe();
+    return () => { supabase.removeChannel(channel); };
+  }, [challengeId, router]);
+
   async function loadChallenge() {
     setLoading(true);
     const r = await fetch(`/api/casual/${challengeId}`);
@@ -72,18 +91,35 @@ export default function ChallengeAcceptPage() {
     );
   }
 
+  // If accepted and this player is the challenger or acceptor, send them to play
+  if (challenge.status === 'accepted' && challenge.game_id) {
+    const isParticipant =
+      challenge.challenger_id === myId ||
+      (challenge.challenged_id && challenge.challenged_id === myId);
+    if (isParticipant) {
+      router.replace(`/play/${challenge.game_id}`);
+      return <main className="min-h-screen flex items-center justify-center"><p className="text-ink-400">Starting game…</p></main>;
+    }
+    return (
+      <main className="min-h-screen flex items-center justify-center px-4">
+        <div className="card p-8 max-w-md w-full text-center space-y-4">
+          <div className="text-4xl">♟</div>
+          <h1 className="font-display text-xl font-bold text-chalk">Game In Progress</h1>
+          <p className="text-ink-400 text-sm">This challenge has already been accepted.</p>
+          <a href={`/game/${challenge.game_id}/spectate`} className="btn-gold inline-block">Watch Game</a>
+        </div>
+      </main>
+    );
+  }
+
   if (challenge.status !== 'pending') {
     return (
       <main className="min-h-screen flex items-center justify-center px-4">
         <div className="card p-8 max-w-md w-full text-center space-y-4">
           <div className="text-4xl">♟</div>
-          <h1 className="font-display text-xl font-bold text-chalk">
-            {challenge.status === 'accepted' ? 'Challenge Accepted' : 'Challenge Unavailable'}
-          </h1>
+          <h1 className="font-display text-xl font-bold text-chalk">Challenge Unavailable</h1>
           <p className="text-ink-400 text-sm capitalize">This challenge is {challenge.status}.</p>
-          {challenge.game_id && (
-            <a href={`/play/${challenge.game_id}`} className="btn-gold inline-block">Watch Game</a>
-          )}
+          <a href="/casual" className="btn-gold inline-block">Find a Game</a>
         </div>
       </main>
     );
