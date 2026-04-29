@@ -21,23 +21,32 @@ export default function ChallengeAcceptPage() {
     loadChallenge();
   }, [challengeId]);
 
-  // If challenger opens their own link, subscribe and auto-redirect on accept
+  // Socket + polling so the challenger's own link tab also auto-redirects
   useEffect(() => {
     if (!challengeId) return;
-    const channel = supabase
-      .channel(`challenge_link_${challengeId}`)
-      .on('postgres_changes', {
-        event: 'UPDATE', schema: 'public',
-        table: 'casual_challenges',
-        filter: `id=eq.${challengeId}`,
-      }, (payload) => {
-        const updated = payload.new as any;
-        if (updated.status === 'accepted' && updated.game_id) {
-          router.push(`/play/${updated.game_id}`);
+    const playerId = localStorage.getItem('player_id');
+    if (!playerId) return;
+
+    const { io } = require('socket.io-client');
+    const sock = io(process.env.NEXT_PUBLIC_SOCKET_URL || 'http://localhost:3001');
+    sock.emit('join_challenge', { challenge_id: challengeId, player_id: playerId });
+    sock.on('challenge_accepted', ({ game_id }: { game_id: string }) => {
+      sock.disconnect(); clearInterval(poll);
+      router.push(`/play/${game_id}`);
+    });
+
+    const poll = setInterval(async () => {
+      try {
+        const r = await fetch(`/api/casual/${challengeId}`);
+        const d = await r.json();
+        if (d.challenge?.status === 'accepted' && d.challenge?.game_id) {
+          sock.disconnect(); clearInterval(poll);
+          router.push(`/play/${d.challenge.game_id}`);
         }
-      })
-      .subscribe();
-    return () => { supabase.removeChannel(channel); };
+      } catch {}
+    }, 3000);
+
+    return () => { sock.disconnect(); clearInterval(poll); };
   }, [challengeId, router]);
 
   async function loadChallenge() {

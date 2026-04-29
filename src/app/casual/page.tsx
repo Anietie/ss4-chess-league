@@ -1,4 +1,5 @@
 'use client';
+import { io, Socket } from 'socket.io-client';
 import { supabase } from '@/lib/supabase';
 import { formatRating } from '@/lib/utils';
 import { Check, Clock, Copy, Link2, Search, Swords, X } from 'lucide-react';
@@ -29,7 +30,9 @@ export default function CasualPage() {
   const [creating, setCreating]         = useState(false);
   const [shareLink, setShareLink]       = useState<string | null>(null);
   const [copied, setCopied]             = useState(false);
-  const searchRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const searchRef  = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const socketRef  = useRef<Socket | null>(null);
+  const pollRef    = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Open challenges from others
   const [openChallenges, setOpenChallenges] = useState<any[]>([]);
@@ -55,24 +58,44 @@ export default function CasualPage() {
     setDirectChallenges(d.direct ?? []);
   }
 
-  // Subscribe to pending challenge — auto-redirect when accepted
+  // When challenger is waiting: connect socket + poll as fallback
   useEffect(() => {
-    if (!pendingChallengeId) return;
-    const channel = supabase
-      .channel(`challenge_${pendingChallengeId}`)
-      .on('postgres_changes', {
-        event: 'UPDATE', schema: 'public',
-        table: 'casual_challenges',
-        filter: `id=eq.${pendingChallengeId}`,
-      }, (payload) => {
-        const updated = payload.new as any;
-        if (updated.status === 'accepted' && updated.game_id) {
-          router.push(`/play/${updated.game_id}`);
+    if (!pendingChallengeId || !myId) return;
+
+    // ── Primary: Socket.io push ────────────────────────────────────────
+    const sock = io(process.env.NEXT_PUBLIC_SOCKET_URL || 'http://localhost:3001');
+    socketRef.current = sock;
+    sock.emit('join_challenge', { challenge_id: pendingChallengeId, player_id: myId });
+    sock.on('challenge_accepted', ({ game_id }: { game_id: string }) => {
+      cleanup();
+      router.push(`/play/${game_id}`);
+    });
+
+    // ── Fallback: poll every 3s in case socket misses it ──────────────
+    pollRef.current = setInterval(async () => {
+      try {
+        const r = await fetch(`/api/casual/${pendingChallengeId}`);
+        const d = await r.json();
+        if (d.challenge?.status === 'accepted' && d.challenge?.game_id) {
+          cleanup();
+          router.push(`/play/${d.challenge.game_id}`);
         }
-      })
-      .subscribe();
-    return () => { supabase.removeChannel(channel); };
-  }, [pendingChallengeId, router]);
+        if (['expired', 'cancelled', 'declined'].includes(d.challenge?.status)) {
+          cleanup();
+          setWaitingForOpponent(false);
+          setPendingChallengeId(null);
+          setShareLink(null);
+        }
+      } catch {}
+    }, 3000);
+
+    function cleanup() {
+      sock.disconnect();
+      if (pollRef.current) clearInterval(pollRef.current);
+    }
+
+    return () => { cleanup(); };
+  }, [pendingChallengeId, myId, router]);
 
   // Debounced player search
   useEffect(() => {
@@ -245,13 +268,16 @@ export default function CasualPage() {
             </div>
             <button
               onClick={() => setIsRated(v => !v)}
-              className={`w-11 h-6 rounded-full transition-colors relative ${
+              role="switch"
+              aria-checked={isRated}
+              className={`w-11 h-6 rounded-full transition-colors relative flex-shrink-0 ${
                 isRated ? 'bg-gold' : 'bg-ink-700'
               }`}
             >
-              <span className={`absolute top-1 w-4 h-4 bg-white rounded-full shadow transition-transform ${
-                isRated ? 'translate-x-6' : 'translate-x-1'
-              }`} />
+              <span
+                className="absolute top-1 w-4 h-4 bg-white rounded-full shadow transition-all duration-200"
+                style={{ left: isRated ? '1.375rem' : '0.125rem' }}
+              />
             </button>
           </div>
 

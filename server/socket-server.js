@@ -29,6 +29,9 @@ const supabase = createClient(
 // Active game states (in-memory, authoritative during game)
 const activeGames = new Map();
 
+// Pending challenge rooms: challenge_id -> Set of socket IDs waiting for acceptance
+const challengeRooms = new Map();
+
 function createGameState(game) {
   const [baseStr, incStr] = (game.time_control || '600+5').split('+');
   const baseMs = parseInt(baseStr) * 1000;
@@ -50,6 +53,22 @@ function createGameState(game) {
 }
 
 io.on('connection', socket => {
+  // ── Challenge lobby: challenger waits here for acceptance ──────────────────
+  socket.on('join_challenge', ({ challenge_id, player_id }) => {
+    const room = `challenge:${challenge_id}`;
+    socket.join(room);
+    socket.data = { ...socket.data, challenge_id, player_id };
+    if (!challengeRooms.has(challenge_id)) challengeRooms.set(challenge_id, new Set());
+    challengeRooms.get(challenge_id).add(socket.id);
+    socket.emit('challenge_joined', { challenge_id });
+    console.log(`[challenge] ${player_id} waiting in challenge:${challenge_id}`);
+  });
+
+  socket.on('leave_challenge', ({ challenge_id }) => {
+    socket.leave(`challenge:${challenge_id}`);
+    challengeRooms.get(challenge_id)?.delete(socket.id);
+  });
+
   socket.on('join_game', async ({ game_id, player_id, is_spectator }) => {
     const room = `game:${game_id}`;
     try {
@@ -229,6 +248,24 @@ async function queueAnalysis(gameId, pgn) {
     console.error('Analysis queue error:', e); 
   }
 }
+
+// ── Internal: called by /api/casual/[id] when a challenge is accepted ───────
+app.post('/notify-challenge-accepted', (req, res) => {
+  const secret = req.headers['x-internal-secret'];
+  if (secret !== (process.env.INTERNAL_API_SECRET || '')) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  const { challenge_id, game_id } = req.body;
+  if (!challenge_id || !game_id) {
+    return res.status(400).json({ error: 'challenge_id and game_id required' });
+  }
+  // Push to everyone waiting in this challenge room
+  io.to(`challenge:${challenge_id}`).emit('challenge_accepted', { game_id });
+  // Clean up room after a short delay
+  setTimeout(() => challengeRooms.delete(challenge_id), 10_000);
+  console.log(`[challenge] Notified challenge:${challenge_id} → game:${game_id}`);
+  res.json({ ok: true, notified: challengeRooms.get(challenge_id)?.size ?? 0 });
+});
 
 app.get('/health', (req, res) => res.json({
   status: 'ok', 
