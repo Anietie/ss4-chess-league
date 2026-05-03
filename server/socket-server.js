@@ -88,8 +88,31 @@ io.on('connection', socket => {
     challengeRooms.get(challenge_id)?.delete(socket.id);
   });
 
-  socket.on('join_game', async ({ game_id, player_id, is_spectator }) => {
+  socket.on('join_game', async ({ game_id, player_id, auth_user_id, is_spectator }) => {
     const room = `game:${game_id}`;
+
+    // ── Server-side player ID resolution ──────────────────────────────────────
+    // The client passes auth_user_id (Supabase auth UUID, always reliable from
+    // getUser()). We resolve the actual players.id here using the service role
+    // key, which bypasses RLS and is guaranteed to find the row even if
+    // auth_user_id was added after some players registered.
+    // The client-supplied player_id is used only as a fallback.
+    let resolvedPlayerId = player_id ?? null;
+    if (auth_user_id) {
+      try {
+        const { data: playerRow } = await supabase
+          .from('players')
+          .select('id')
+          .eq('auth_user_id', auth_user_id)
+          .single();
+        if (playerRow?.id) resolvedPlayerId = playerRow.id;
+      } catch (e) {
+        console.warn('[join_game] auth_user_id lookup failed, falling back to client player_id:', e?.message);
+      }
+    }
+
+    // Recompute is_spectator: only a spectator if we couldn't resolve any player ID
+    const effectiveIsSpectator = !resolvedPlayerId || is_spectator === true;
     try {
       if (!activeGames.has(game_id)) {
         // --- Race-condition guard ---
@@ -150,14 +173,14 @@ io.on('connection', socket => {
 
       const state = activeGames.get(game_id);
       socket.join(room);
-      socket.data = { game_id, player_id, is_spectator };
+      socket.data = { game_id, player_id: resolvedPlayerId, is_spectator: effectiveIsSpectator };
 
-      if (is_spectator) {
+      if (effectiveIsSpectator) {
         state.spectators.add(socket.id);
       } else {
-        state.connected.add(player_id);
-        const t = state.disc_timers.get(player_id);
-        if (t) { clearTimeout(t); state.disc_timers.delete(player_id); }
+        state.connected.add(resolvedPlayerId);
+        const t = state.disc_timers.get(resolvedPlayerId);
+        if (t) { clearTimeout(t); state.disc_timers.delete(resolvedPlayerId); }
       }
 
       socket.emit('game_state', {
@@ -173,6 +196,9 @@ io.on('connection', socket => {
         black_name: state.black_name,
         white_rating: state.white_rating,
         black_rating: state.black_rating,
+        // Echo the resolved player ID back so the client knows who they are
+        // without relying on a client-side DB lookup that can fail
+        your_player_id: effectiveIsSpectator ? null : resolvedPlayerId,
       });
 
       if (state.status === 'waiting' &&
@@ -190,7 +216,8 @@ io.on('connection', socket => {
       }
 
       io.to(room).emit('player_joined', {
-        player_id, is_spectator, connected_players: [...state.connected], spectator_count: state.spectators.size,
+        player_id: resolvedPlayerId, is_spectator: effectiveIsSpectator,
+        connected_players: [...state.connected], spectator_count: state.spectators.size,
       });
     } catch (err) {
       console.error('[join_game]', err);

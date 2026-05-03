@@ -146,22 +146,17 @@ export default function GameRoomPage() {
     let sock: Socket;
 
     async function init() {
-      // Always resolve player_id from Supabase auth + DB — never rely on
-      // localStorage which may not be set yet when this effect runs.
+      // Always resolve identity from Supabase auth — the auth UUID is 100% reliable.
+      // We do NOT do a client-side DB lookup for player_id here because:
+      //   1. auth_user_id may be null for players created before that column existed.
+      //   2. The socket server has the service role key and will resolve it reliably.
+      // The server echoes back `your_player_id` in the game_state event.
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) { setStatus('unauthorized'); return; }
 
-      // Fetch the players table row for this auth user
-      const { data: playerRow } = await supabase
-        .from('players')
-        .select('id')
-        .eq('auth_user_id', user.id)
-        .single();
-
-      const myPlayerId = playerRow?.id ?? null;
-      myPlayerIdRef.current = myPlayerId;
-      // Also keep localStorage in sync for other components
-      if (myPlayerId) localStorage.setItem('player_id', myPlayerId);
+      // Keep a preliminary player_id from localStorage as a display hint only
+      const localPlayerId = typeof window !== 'undefined' ? localStorage.getItem('player_id') : null;
+      myPlayerIdRef.current = localPlayerId;
 
       sock = io(process.env.NEXT_PUBLIC_SOCKET_URL || 'http://localhost:3001', {
         transports: ['websocket', 'polling'],
@@ -169,11 +164,12 @@ export default function GameRoomPage() {
       socketRef.current = sock;
 
       sock.on('connect', () => {
-        console.log('[socket] connected, joining game:', gameId, 'as player:', myPlayerId);
+        console.log('[socket] connected, joining game:', gameId, 'auth_user_id:', user.id);
         sock.emit('join_game', {
           game_id: gameId,
-          player_id: myPlayerId,
-          is_spectator: !myPlayerId,
+          auth_user_id: user.id,          // server resolves players.id from this
+          player_id: localPlayerId,        // fallback hint only
+          is_spectator: false,             // server decides based on resolved player_id
         });
       });
 
@@ -188,9 +184,19 @@ export default function GameRoomPage() {
         setMoves(chess.history());
         setStatus(d.status === "active" ? "active" : "waiting");
         setSpectators(d.spectator_count || 0);
-        if (myPlayerId && d.white_player_id && d.black_player_id) {
-          if (myPlayerId === d.white_player_id) myColorRef.current = "white";
-          else if (myPlayerId === d.black_player_id) myColorRef.current = "black";
+
+        // Server echoes back our resolved player_id — use it as the source of truth.
+        // This handles the case where the client-side auth_user_id lookup would have
+        // failed (e.g., auth_user_id was null for legacy players in the DB).
+        if (d.your_player_id) {
+          myPlayerIdRef.current = d.your_player_id;
+          localStorage.setItem('player_id', d.your_player_id);
+        }
+
+        const myId = myPlayerIdRef.current;
+        if (myId && d.white_player_id && d.black_player_id) {
+          if (myId === d.white_player_id) myColorRef.current = "white";
+          else if (myId === d.black_player_id) myColorRef.current = "black";
         }
         setWhite((p) => ({
           ...p,
@@ -210,8 +216,11 @@ export default function GameRoomPage() {
 
       sock.on("game_started", (d) => {
         setStatus("active");
-        if (myPlayerId === d.white_player_id) myColorRef.current = "white";
-        if (myPlayerId === d.black_player_id) myColorRef.current = "black";
+        // Use ref here — myPlayerIdRef is already populated from game_state which
+        // arrives just before this event. Never use a stale closure variable.
+        const myId = myPlayerIdRef.current;
+        if (myId === d.white_player_id) myColorRef.current = "white";
+        if (myId === d.black_player_id) myColorRef.current = "black";
         setWhite((p) => ({
           ...p,
           name:   d.white_name   || p.name,
@@ -254,7 +263,7 @@ export default function GameRoomPage() {
         }
       });
       sock.on("draw_offered", ({ by_player_id }) => {
-        if (by_player_id !== myPlayerId) setDrawOffered(true);
+        if (by_player_id !== myPlayerIdRef.current) setDrawOffered(true);
       });
       sock.on("spectator_count", ({ count }) => setSpectators(count));
       sock.on("error", ({ message }) => {
