@@ -169,13 +169,22 @@ export default function GameRoomPage() {
         setMoves(chess.history());
         setStatus(d.status === "active" ? "active" : "waiting");
         setSpectators(d.spectator_count || 0);
+        // Set color from game_state — handles late-joiners who missed game_started
+        if (myPlayerId && d.white_player_id && d.black_player_id) {
+          if (myPlayerId === d.white_player_id) myColorRef.current = "white";
+          else if (myPlayerId === d.black_player_id) myColorRef.current = "black";
+        }
         setWhite((p) => ({
           ...p,
+          name:   d.white_name   || p.name,
+          rating: d.white_rating || p.rating,
           timeMs: d.white_time,
           isActive: d.current_turn === "w" && d.status === "active",
         }));
         setBlack((p) => ({
           ...p,
+          name:   d.black_name   || p.name,
+          rating: d.black_rating || p.rating,
           timeMs: d.black_time,
           isActive: d.current_turn === "b" && d.status === "active",
         }));
@@ -185,8 +194,18 @@ export default function GameRoomPage() {
         setStatus("active");
         if (myPlayerId === d.white_player_id) myColorRef.current = "white";
         if (myPlayerId === d.black_player_id) myColorRef.current = "black";
-        setWhite((p) => ({ ...p, timeMs: d.white_time, isActive: true }));
-        setBlack((p) => ({ ...p, timeMs: d.black_time, isActive: false }));
+        setWhite((p) => ({
+          ...p,
+          name:   d.white_name   || p.name,
+          rating: d.white_rating || p.rating,
+          timeMs: d.white_time, isActive: true,
+        }));
+        setBlack((p) => ({
+          ...p,
+          name:   d.black_name   || p.name,
+          rating: d.black_rating || p.rating,
+          timeMs: d.black_time, isActive: false,
+        }));
       });
 
       sock.on("move_made", (d) => {

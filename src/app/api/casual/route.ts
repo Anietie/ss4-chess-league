@@ -14,7 +14,7 @@ const adminSupabase = () =>
  */
 export async function POST(req: NextRequest) {
   const body = await req.json();
-  const { challenger_id, challenged_id, time_control = '600+0', is_rated = false } = body;
+  const { challenger_id, challenged_id, time_control = '600+0', is_rated = false, color_preference = 'random' } = body;
 
   if (!challenger_id) {
     return NextResponse.json({ error: 'challenger_id required' }, { status: 400 });
@@ -57,6 +57,7 @@ export async function POST(req: NextRequest) {
       challenged_id: challenged_id ?? null,
       time_control,
       is_rated,
+      color_preference,
       status: 'pending',
       expires_at: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
     })

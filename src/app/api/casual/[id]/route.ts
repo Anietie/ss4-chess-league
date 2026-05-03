@@ -104,10 +104,19 @@ export async function PATCH(
     return NextResponse.json({ error: 'Acceptor not found' }, { status: 404 });
   }
 
-  // Randomly assign colors
-  const [white, black] = Math.random() < 0.5
-    ? [challenge.challenger, acceptor]
-    : [acceptor, challenge.challenger];
+  // Assign colors based on challenger's preference
+  // color_preference: 'white' | 'black' | 'random' (default)
+  const pref = challenge.color_preference || 'random';
+  let white, black;
+  if (pref === 'white') {
+    [white, black] = [challenge.challenger, acceptor];
+  } else if (pref === 'black') {
+    [white, black] = [acceptor, challenge.challenger];
+  } else {
+    [white, black] = Math.random() < 0.5
+      ? [challenge.challenger, acceptor]
+      : [acceptor, challenge.challenger];
+  }
 
   // Fetch current active season
   const { data: season } = await supabase

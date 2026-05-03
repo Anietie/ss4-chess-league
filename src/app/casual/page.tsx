@@ -24,6 +24,7 @@ export default function CasualPage() {
   // Challenge creation state
   const [timeControl, setTimeControl]   = useState('600+0');
   const [isRated, setIsRated]           = useState(false);
+  const [colorPref, setColorPref]       = useState<'white'|'black'|'random'>('random');
   const [searchQuery, setSearchQuery]   = useState('');
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [selectedPlayer, setSelectedPlayer] = useState<any>(null);
@@ -124,10 +125,11 @@ export default function CasualPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          challenger_id: myId,
-          challenged_id: challengedId ?? null,
-          time_control:  timeControl,
-          is_rated:      isRated,
+          challenger_id:    myId,
+          challenged_id:    challengedId ?? null,
+          time_control:     timeControl,
+          is_rated:         isRated,
+          color_preference: colorPref,
         }),
       });
       const d = await r.json();
@@ -281,6 +283,26 @@ export default function CasualPage() {
                 style={{ left: isRated ? '1.375rem' : '0.125rem' }}
               />
             </button>
+          </div>
+
+          {/* Color preference */}
+          <div>
+            <p className="text-xs text-ink-400 mb-2 uppercase tracking-wider">Play As</p>
+            <div className="grid grid-cols-3 gap-2">
+              {([['random','🎲 Random'],['white','♔ White'],['black','♚ Black']] as const).map(([val, label]) => (
+                <button
+                  key={val}
+                  onClick={() => setColorPref(val)}
+                  className={`py-2 rounded-lg text-sm border transition-all ${
+                    colorPref === val
+                      ? 'border-gold bg-gold/10 text-gold'
+                      : 'border-ink-700 text-ink-300 hover:border-ink-500'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
           </div>
 
           {/* Player search */}

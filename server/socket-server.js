@@ -41,6 +41,11 @@ function createGameState(game) {
     chess: new Chess(),
     white_player_id: game.white_player_id,
     black_player_id: game.black_player_id,
+    // Player info populated after DB fetch
+    white_name: game.white_name || 'White',
+    black_name: game.black_name || 'Black',
+    white_rating: game.white_rating || 1200,
+    black_rating: game.black_rating || 1200,
     white_time: baseMs, black_time: baseMs,
     increment: incMs, base_time: baseMs,
     last_move_ts: null,
@@ -73,10 +78,19 @@ io.on('connection', socket => {
     const room = `game:${game_id}`;
     try {
       if (!activeGames.has(game_id)) {
-        const { data: game } = await supabase.from('games').select('*').eq('id', game_id).single();
+        const { data: game } = await supabase.from('games')
+          .select(`*, white_player:players!games_white_player_id_fkey(full_name, ss4_rating), black_player:players!games_black_player_id_fkey(full_name, ss4_rating)`)
+          .eq('id', game_id).single();
         if (!game) { socket.emit('error', { message: 'Game not found' }); return; }
         if (game.result !== '*') { socket.emit('game_already_finished', { result: game.result }); return; }
-        activeGames.set(game_id, createGameState(game));
+        const enriched = {
+          ...game,
+          white_name: game.white_player?.full_name || 'White',
+          black_name: game.black_player?.full_name || 'Black',
+          white_rating: game.white_player?.ss4_rating || 1200,
+          black_rating: game.black_player?.ss4_rating || 1200,
+        };
+        activeGames.set(game_id, createGameState(enriched));
       }
 
       const state = activeGames.get(game_id);
@@ -97,6 +111,13 @@ io.on('connection', socket => {
         current_turn: state.chess.turn(), status: state.status,
         move_history: state.chess.history({ verbose: true }),
         connected_players: [...state.connected], spectator_count: state.spectators.size,
+        // Include player identities so client can set color even if game_started was missed
+        white_player_id: state.white_player_id,
+        black_player_id: state.black_player_id,
+        white_name: state.white_name,
+        black_name: state.black_name,
+        white_rating: state.white_rating,
+        black_rating: state.black_rating,
       });
 
       if (state.status === 'waiting' &&
