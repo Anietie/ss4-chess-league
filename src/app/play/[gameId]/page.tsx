@@ -143,17 +143,25 @@ export default function GameRoomPage() {
   const myPlayerIdRef = useRef<string | null>(null);
 
   useEffect(() => {
-    // Resolve player_id at runtime — localStorage is unavailable during SSR,
-    // so reading it here (inside useEffect) guarantees the real value.
-    myPlayerIdRef.current = typeof window !== 'undefined'
-      ? localStorage.getItem('player_id') : null;
-    const myPlayerId = myPlayerIdRef.current;
-
     let sock: Socket;
 
     async function init() {
+      // Always resolve player_id from Supabase auth + DB — never rely on
+      // localStorage which may not be set yet when this effect runs.
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) { setStatus('unauthorized'); return; }
+
+      // Fetch the players table row for this auth user
+      const { data: playerRow } = await supabase
+        .from('players')
+        .select('id')
+        .eq('auth_user_id', user.id)
+        .single();
+
+      const myPlayerId = playerRow?.id ?? null;
+      myPlayerIdRef.current = myPlayerId;
+      // Also keep localStorage in sync for other components
+      if (myPlayerId) localStorage.setItem('player_id', myPlayerId);
 
       sock = io(process.env.NEXT_PUBLIC_SOCKET_URL || 'http://localhost:3001', {
         transports: ['websocket', 'polling'],
@@ -161,7 +169,7 @@ export default function GameRoomPage() {
       socketRef.current = sock;
 
       sock.on('connect', () => {
-        console.log('[socket] connected, joining game:', gameId);
+        console.log('[socket] connected, joining game:', gameId, 'as player:', myPlayerId);
         sock.emit('join_game', {
           game_id: gameId,
           player_id: myPlayerId,
