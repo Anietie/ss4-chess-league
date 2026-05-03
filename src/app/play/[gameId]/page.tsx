@@ -140,27 +140,38 @@ export default function GameRoomPage() {
     isActive: false,
   });
 
-  const myPlayerId =
-    typeof window !== "undefined" ? localStorage.getItem("player_id") : null;
+  const myPlayerIdRef = useRef<string | null>(null);
 
   useEffect(() => {
-    async function checkAuth() {
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-      if (!user) {
-        setStatus("unauthorized");
-        return;
-      }
+    // Resolve player_id at runtime — localStorage is unavailable during SSR,
+    // so reading it here (inside useEffect) guarantees the real value.
+    myPlayerIdRef.current = typeof window !== 'undefined'
+      ? localStorage.getItem('player_id') : null;
+    const myPlayerId = myPlayerIdRef.current;
 
-      const sock = io(
-        process.env.NEXT_PUBLIC_SOCKET_URL || "http://localhost:3001",
-      );
+    let sock: Socket;
+
+    async function init() {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) { setStatus('unauthorized'); return; }
+
+      sock = io(process.env.NEXT_PUBLIC_SOCKET_URL || 'http://localhost:3001', {
+        transports: ['websocket', 'polling'],
+      });
       socketRef.current = sock;
-      sock.emit("join_game", {
-        game_id: gameId,
-        player_id: myPlayerId,
-        is_spectator: !myPlayerId,
+
+      sock.on('connect', () => {
+        console.log('[socket] connected, joining game:', gameId);
+        sock.emit('join_game', {
+          game_id: gameId,
+          player_id: myPlayerId,
+          is_spectator: !myPlayerId,
+        });
+      });
+
+      sock.on('connect_error', (err) => {
+        console.error('[socket] connect error:', err.message);
+        setStatus('waiting'); // don't leave user stuck on Loading
       });
 
       sock.on("game_state", (d) => {
@@ -169,7 +180,6 @@ export default function GameRoomPage() {
         setMoves(chess.history());
         setStatus(d.status === "active" ? "active" : "waiting");
         setSpectators(d.spectator_count || 0);
-        // Set color from game_state — handles late-joiners who missed game_started
         if (myPlayerId && d.white_player_id && d.black_player_id) {
           if (myPlayerId === d.white_player_id) myColorRef.current = "white";
           else if (myPlayerId === d.black_player_id) myColorRef.current = "black";
@@ -239,8 +249,6 @@ export default function GameRoomPage() {
         if (by_player_id !== myPlayerId) setDrawOffered(true);
       });
       sock.on("spectator_count", ({ count }) => setSpectators(count));
-
-      // Handle server-side errors so the UI doesn't stay on "Loading" forever
       sock.on("error", ({ message }) => {
         console.error("[socket error]", message);
         setStatus("ended");
@@ -250,11 +258,15 @@ export default function GameRoomPage() {
         setStatus("ended");
         setResult(r);
       });
-
-      return () => sock.disconnect();
     }
-    checkAuth();
-  }, [gameId, chess, myPlayerId]);
+
+    init();
+
+    return () => {
+      sock?.disconnect();
+      socketRef.current = null;
+    };
+  }, [gameId]);
 
   // HELPER: Show valid move dots
   function getMoveOptions(square: any) {

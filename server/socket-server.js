@@ -12,12 +12,22 @@ const { createClient } = require('@supabase/supabase-js');
 require('dotenv').config({ path: '.env.local' });
 
 const app = express();
-app.use(cors({ origin: process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000' }));
+const allowedOrigin = (origin, callback) => {
+  if (!origin) return callback(null, true); // same-origin / curl
+  const allowed = [
+    process.env.NEXT_PUBLIC_APP_URL,
+    'http://localhost:3000',
+    'http://localhost:3001',
+  ].filter(Boolean);
+  const ok = allowed.some(a => origin === a || origin.startsWith(a));
+  callback(ok ? null : new Error('CORS: ' + origin), ok);
+};
+app.use(cors({ origin: allowedOrigin, credentials: true }));
 app.use(express.json());
 
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
-  cors: { origin: process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000', methods: ['GET','POST'] },
+  cors: { origin: allowedOrigin, methods: ['GET','POST'], credentials: true },
   pingTimeout: 30000, pingInterval: 10000,
 });
 
