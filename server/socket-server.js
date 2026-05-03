@@ -178,7 +178,7 @@ io.on('connection', socket => {
             console.log(`  black_player=${JSON.stringify(game.black_player)}`);
 
             if (game.result !== '*') {
-              throw { type: 'already_finished', result: game.result };
+              throw { type: 'already_finished', result: game.result, pgn: game.pgn, white_name: game.white_player?.full_name, black_name: game.black_player?.full_name };
             }
 
             const enriched = {
@@ -201,7 +201,7 @@ io.on('connection', socket => {
             if (setupErr?.type === 'not_found') {
               socket.emit('error', { message: 'Game not found' });
             } else if (setupErr?.type === 'already_finished') {
-              socket.emit('game_already_finished', { result: setupErr.result });
+              socket.emit('game_already_finished', { result: setupErr.result, pgn: setupErr.pgn, white_name: setupErr.white_name, black_name: setupErr.black_name });
             } else {
               socket.emit('error', { message: 'Server error loading game' });
             }

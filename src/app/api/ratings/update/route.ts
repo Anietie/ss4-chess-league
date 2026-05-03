@@ -41,10 +41,18 @@ export async function POST(req: NextRequest) {
   await supabase.from('players').update({ ss4_rating: updates.white.newRating, rating_deviation: updates.white.newRD, volatility: updates.white.newVolatility, games_played: white.games_played + 1 }).eq('id', white.id);
   await supabase.from('players').update({ ss4_rating: updates.black.newRating, rating_deviation: updates.black.newRD, volatility: updates.black.newVolatility, games_played: black.games_played + 1 }).eq('id', black.id);
 
-  await supabase.from('rating_history').insert([
-    { player_id: white.id, game_id, season: game.season, rating: updates.white.newRating, rating_deviation: updates.white.newRD, volatility: updates.white.newVolatility, change: updates.white.ratingChange, recorded_at: now },
-    { player_id: black.id, game_id, season: game.season, rating: updates.black.newRating, rating_deviation: updates.black.newRD, volatility: updates.black.newVolatility, change: updates.black.ratingChange, recorded_at: now },
-  ]);
+  // rating_history is optional — don't let a constraint failure (e.g. null season on
+  // calibration games) block the player rating updates that already succeeded above.
+  if (game.season != null) {
+    try {
+      await supabase.from('rating_history').insert([
+        { player_id: white.id, game_id, season: game.season, rating: updates.white.newRating, rating_deviation: updates.white.newRD, volatility: updates.white.newVolatility, change: updates.white.ratingChange, recorded_at: now },
+        { player_id: black.id, game_id, season: game.season, rating: updates.black.newRating, rating_deviation: updates.black.newRD, volatility: updates.black.newVolatility, change: updates.black.ratingChange, recorded_at: now },
+      ]);
+    } catch (rhErr) {
+      console.error('[ratings/update] rating_history insert failed (non-fatal):', rhErr);
+    }
+  }
 
   // Update standings (football scoring: W=3, D=1, L=0)
   // No longer gated on game.tier — the league system has no tiers.
@@ -90,22 +98,14 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  await supabase.from('notifications').insert([
-    { 
-      player_id: white.id, 
-      type: 'result_recorded', 
-      title: 'Game Result Recorded', 
-      message: `Result: ${result}. Rating: ${updates.white.ratingChange >= 0 ? '+' : ''}${Math.round(updates.white.ratingChange)}`, 
-      game_id 
-    },
-    { 
-      player_id: black.id, 
-      type: 'result_recorded', 
-      title: 'Game Result Recorded', 
-      message: `Result: ${result}. Rating: ${updates.black.ratingChange >= 0 ? '+' : ''}${Math.round(updates.black.ratingChange)}`, 
-      game_id 
-    },
-  ]);
+  try {
+    await supabase.from('notifications').insert([
+      { player_id: white.id, type: 'result_recorded', title: 'Game Result Recorded', message: `Result: ${result}. Rating: ${updates.white.ratingChange >= 0 ? '+' : ''}${Math.round(updates.white.ratingChange)}`, game_id },
+      { player_id: black.id, type: 'result_recorded', title: 'Game Result Recorded', message: `Result: ${result}. Rating: ${updates.black.ratingChange >= 0 ? '+' : ''}${Math.round(updates.black.ratingChange)}`, game_id },
+    ]);
+  } catch (nErr) {
+    console.error('[ratings/update] notifications insert failed (non-fatal):', nErr);
+  }
 
   return NextResponse.json({
     success: true,

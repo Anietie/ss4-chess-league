@@ -121,6 +121,10 @@ export default function GameRoomPage() {
   const [drawOffered, setDrawOffered] = useState(false);
   const [spectators, setSpectators] = useState(0);
   const { play, enabled: soundEnabled, toggle: toggleSound } = useSound();
+  // Keep a ref to always-current `play` so socket handlers (set up once, deps=[])
+  // don't capture a stale closure — toggling sound takes effect on next move.
+  const playRef = useRef(play);
+  useEffect(() => { playRef.current = play; }, [play]);
 
   // TAP-TO-MOVE STATE
   const [moveFrom, setMoveFrom] = useState<any>(null);
@@ -288,11 +292,11 @@ export default function GameRoomPage() {
         }
         const history = chess.history({ verbose: true });
         const lastMove = history[history.length - 1];
-        if (lastMove?.promotion) play("promote");
-        else if (lastMove?.flags?.includes("k") || lastMove?.flags?.includes("q")) play("castle");
-        else if (chess.isCheck()) play("check");
-        else if (lastMove?.captured) play("capture");
-        else play("move");
+        if (lastMove?.promotion) playRef.current("promote");
+        else if (lastMove?.flags?.includes("k") || lastMove?.flags?.includes("q")) playRef.current("castle");
+        else if (chess.isCheck()) playRef.current("check");
+        else if (lastMove?.captured) playRef.current("capture");
+        else playRef.current("move");
         setFen(chess.fen());
         setMoves(chess.history());
         setWhite((p) => ({ ...p, timeMs: d.white_time, isActive: d.current_turn === "w" }));
@@ -302,14 +306,18 @@ export default function GameRoomPage() {
       sock.on("game_ended", (d) => {
         setStatus("ended");
         setResult(d.result);
-        if (d.pgn) setFinalPgn(d.pgn); // server sends the complete, correctly-headered PGN
+        if (d.pgn) {
+          setFinalPgn(d.pgn);
+          // Load final position so board shows the last move
+          try { chess.loadPgn(d.pgn); setFen(chess.fen()); setMoves(chess.history()); } catch {}
+        }
         setWhite((p) => ({ ...p, isActive: false }));
         setBlack((p) => ({ ...p, isActive: false }));
         if (myColorRef.current) {
           const iWon = (d.result === "1-0" && myColorRef.current === "white") || (d.result === "0-1" && myColorRef.current === "black");
-          if (iWon) play("win");
-          else if (d.result === "0.5-0.5") play("draw");
-          else play("loss");
+          if (iWon) playRef.current("win");
+          else if (d.result === "0.5-0.5") playRef.current("draw");
+          else playRef.current("loss");
         }
       });
       sock.on("draw_offered", ({ by_player_id }) => {
@@ -321,9 +329,17 @@ export default function GameRoomPage() {
         setStatus("ended");
         setResult(message || "Server error");
       });
-      sock.on("game_already_finished", ({ result: r }) => {
+      sock.on("game_already_finished", ({ result: r, pgn: finishedPgn }) => {
         setStatus("ended");
         setResult(r);
+        if (finishedPgn) {
+          try {
+            chess.loadPgn(finishedPgn);
+            setFen(chess.fen());
+            setMoves(chess.history());
+            setFinalPgn(finishedPgn);
+          } catch {}
+        }
       });
 
       } catch (err: any) {
