@@ -12,23 +12,30 @@ const { createClient } = require('@supabase/supabase-js');
 require('dotenv').config({ path: '.env.local' });
 
 const app = express();
+
+// Accept any https:// origin (browser game clients) + localhost for dev.
+// Security is enforced by Supabase auth + player_id verification in game logic,
+// NOT by origin restriction. Blocking by origin only breaks production connections
+// when NEXT_PUBLIC_APP_URL on Render doesn't exactly match the Vercel deployment URL.
 const allowedOrigin = (origin, callback) => {
-  if (!origin) return callback(null, true); // same-origin / curl
-  const allowed = [
-    process.env.NEXT_PUBLIC_APP_URL,
-    'http://localhost:3000',
-    'http://localhost:3001',
-  ].filter(Boolean);
-  const ok = allowed.some(a => origin === a || origin.startsWith(a));
-  callback(ok ? null : new Error('CORS: ' + origin), ok);
+  if (!origin) return callback(null, true); // same-origin / server-to-server
+  const ok =
+    origin.startsWith('https://') ||        // any browser HTTPS client
+    origin.startsWith('http://localhost') || // local dev
+    origin.startsWith('http://127.0.0.1');   // local dev
+  if (!ok) console.warn(`[CORS] blocked origin: ${origin}`);
+  callback(ok ? null : new Error('CORS blocked: ' + origin), ok);
 };
+
 app.use(cors({ origin: allowedOrigin, credentials: true }));
 app.use(express.json());
 
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
-  cors: { origin: allowedOrigin, methods: ['GET','POST'], credentials: true },
-  pingTimeout: 30000, pingInterval: 10000,
+  cors: { origin: allowedOrigin, methods: ['GET', 'POST'], credentials: true },
+  // Longer timeouts for Render free tier cold-start delays
+  pingTimeout: 60000, pingInterval: 25000,
+  connectTimeout: 45000,
 });
 
 const supabase = createClient(

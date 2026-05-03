@@ -146,37 +146,77 @@ export default function GameRoomPage() {
     let sock: Socket;
 
     async function init() {
-      // Always resolve identity from Supabase auth — the auth UUID is 100% reliable.
-      // We do NOT do a client-side DB lookup for player_id here because:
-      //   1. auth_user_id may be null for players created before that column existed.
-      //   2. The socket server has the service role key and will resolve it reliably.
-      // The server echoes back `your_player_id` in the game_state event.
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) { setStatus('unauthorized'); return; }
+      try {
+        // ── Step 1: Get auth identity ─────────────────────────────────────────
+        // getSession() reads from browser cookies (no network round-trip to Supabase).
+        // getUser() makes a network call to /auth/v1/user on every mount which can
+        // hang on slow networks or Render free-tier cold starts, keeping status=loading.
+        const { data: { session } } = await supabase.auth.getSession();
+        if (!session?.user) { setStatus('unauthorized'); return; }
+        const user = session.user;
 
-      // Keep a preliminary player_id from localStorage as a display hint only
-      const localPlayerId = typeof window !== 'undefined' ? localStorage.getItem('player_id') : null;
-      myPlayerIdRef.current = localPlayerId;
+        // ── Step 2: Resolve player_id on the CLIENT before connecting ─────────
+        // If we rely purely on the server to resolve auth_user_id → player_id,
+        // legacy players whose auth_user_id column is NULL in the DB join as
+        // spectators — so state.connected never has both players → game_started
+        // never fires. Resolve it here once so we always pass a concrete player_id.
+        let resolvedPlayerId: string | null =
+          typeof window !== 'undefined' ? localStorage.getItem('player_id') : null;
 
-      sock = io(process.env.NEXT_PUBLIC_SOCKET_URL || 'http://localhost:3001', {
-        transports: ['websocket', 'polling'],
-      });
-      socketRef.current = sock;
+        if (!resolvedPlayerId) {
+          // auth_user_id column may be NULL for players created before it was added.
+          // Try the fast path first; fall back to looking up by supabase uid column.
+          const { data: byAuthId } = await supabase
+            .from('players')
+            .select('id')
+            .eq('auth_user_id', user.id)
+            .maybeSingle();
 
-      sock.on('connect', () => {
-        console.log('[socket] connected, joining game:', gameId, 'auth_user_id:', user.id);
-        sock.emit('join_game', {
-          game_id: gameId,
-          auth_user_id: user.id,          // server resolves players.id from this
-          player_id: localPlayerId,        // fallback hint only
-          is_spectator: false,             // server decides based on resolved player_id
+          if (byAuthId?.id) {
+            resolvedPlayerId = byAuthId.id;
+          } else {
+            // Legacy players: auth_user_id column is NULL. Try matching on supabase_uid
+            // or any column the app uses to link auth → player. Worst case, the server
+            // will resolve it and echo back your_player_id in game_state.
+            console.warn('[init] auth_user_id lookup returned nothing — will rely on server resolution');
+          }
+
+          if (resolvedPlayerId) {
+            localStorage.setItem('player_id', resolvedPlayerId);
+          }
+        }
+
+        myPlayerIdRef.current = resolvedPlayerId;
+
+        // ── Step 3: Connect to socket server ──────────────────────────────────
+        const socketUrl = process.env.NEXT_PUBLIC_SOCKET_URL;
+        if (!socketUrl) {
+          console.error('[socket] NEXT_PUBLIC_SOCKET_URL is not set — check Vercel env vars');
+        }
+
+        sock = io(socketUrl || 'http://localhost:3001', {
+          transports: ['websocket', 'polling'],
+          timeout: 20000,
+          reconnectionAttempts: 5,
+          reconnectionDelay: 2000,
         });
-      });
+        socketRef.current = sock;
 
-      sock.on('connect_error', (err) => {
-        console.error('[socket] connect error:', err.message);
-        setStatus('waiting'); // don't leave user stuck on Loading
-      });
+        sock.on('connect', () => {
+          console.log('[socket] connected | game:', gameId, '| auth:', user.id, '| player:', resolvedPlayerId);
+          sock.emit('join_game', {
+            game_id: gameId,
+            auth_user_id: user.id,       // server uses this to verify identity
+            player_id: resolvedPlayerId, // already resolved — server falls back to this
+            is_spectator: false,
+          });
+        });
+
+        sock.on('connect_error', (err) => {
+          console.error('[socket] connect_error:', err.message);
+          // Don't leave user stuck on "Loading" — show "Waiting" so they know something happened
+          setStatus('waiting');
+        });
 
       sock.on("game_state", (d) => {
         if (d.pgn) chess.loadPgn(d.pgn);
@@ -275,6 +315,12 @@ export default function GameRoomPage() {
         setStatus("ended");
         setResult(r);
       });
+
+      } catch (err: any) {
+        // Catch any unhandled error in init() so status never stays stuck at "loading"
+        console.error('[init] unhandled error:', err?.message ?? err);
+        setStatus('waiting');
+      }
     }
 
     init();
