@@ -240,6 +240,17 @@ export default function GameRoomPage() {
       });
       sock.on("spectator_count", ({ count }) => setSpectators(count));
 
+      // Handle server-side errors so the UI doesn't stay on "Loading" forever
+      sock.on("error", ({ message }) => {
+        console.error("[socket error]", message);
+        setStatus("ended");
+        setResult(message || "Server error");
+      });
+      sock.on("game_already_finished", ({ result: r }) => {
+        setStatus("ended");
+        setResult(r);
+      });
+
       return () => sock.disconnect();
     }
     checkAuth();

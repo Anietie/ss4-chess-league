@@ -29,6 +29,10 @@ const supabase = createClient(
 // Active game states (in-memory, authoritative during game)
 const activeGames = new Map();
 
+// Prevents race condition when two players join simultaneously:
+// Maps game_id -> Promise of the DB setup so the second joiner awaits the first.
+const pendingGameSetup = new Map();
+
 // Pending challenge rooms: challenge_id -> Set of socket IDs waiting for acceptance
 const challengeRooms = new Map();
 
@@ -78,19 +82,60 @@ io.on('connection', socket => {
     const room = `game:${game_id}`;
     try {
       if (!activeGames.has(game_id)) {
-        const { data: game } = await supabase.from('games')
-          .select(`*, white_player:players!games_white_player_id_fkey(full_name, ss4_rating), black_player:players!games_black_player_id_fkey(full_name, ss4_rating)`)
-          .eq('id', game_id).single();
-        if (!game) { socket.emit('error', { message: 'Game not found' }); return; }
-        if (game.result !== '*') { socket.emit('game_already_finished', { result: game.result }); return; }
-        const enriched = {
-          ...game,
-          white_name: game.white_player?.full_name || 'White',
-          black_name: game.black_player?.full_name || 'Black',
-          white_rating: game.white_player?.ss4_rating || 1200,
-          black_rating: game.black_player?.ss4_rating || 1200,
-        };
-        activeGames.set(game_id, createGameState(enriched));
+        // --- Race-condition guard ---
+        // If another join_game for this game is already doing the DB fetch,
+        // wait for it instead of launching a duplicate fetch that would
+        // overwrite the state and lose the first player's connected entry.
+        if (pendingGameSetup.has(game_id)) {
+          try { await pendingGameSetup.get(game_id); } catch { /* handled below */ }
+        } else {
+          const setupPromise = (async () => {
+            const { data: game, error: gameError } = await supabase.from('games')
+              .select(`*, white_player:players!games_white_player_id_fkey(full_name, ss4_rating), black_player:players!games_black_player_id_fkey(full_name, ss4_rating)`)
+              .eq('id', game_id).single();
+
+            if (gameError || !game) {
+              throw { type: 'not_found' };
+            }
+            if (game.result !== '*') {
+              throw { type: 'already_finished', result: game.result };
+            }
+
+            const enriched = {
+              ...game,
+              white_name: game.white_player?.full_name || 'White',
+              black_name: game.black_player?.full_name || 'Black',
+              white_rating: game.white_player?.ss4_rating || 1200,
+              black_rating: game.black_player?.ss4_rating || 1200,
+            };
+            // Only write to the map if not already set by a concurrent join
+            if (!activeGames.has(game_id)) {
+              activeGames.set(game_id, createGameState(enriched));
+            }
+          })();
+
+          pendingGameSetup.set(game_id, setupPromise);
+          try {
+            await setupPromise;
+          } catch (setupErr) {
+            pendingGameSetup.delete(game_id);
+            if (setupErr?.type === 'not_found') {
+              socket.emit('error', { message: 'Game not found' });
+            } else if (setupErr?.type === 'already_finished') {
+              socket.emit('game_already_finished', { result: setupErr.result });
+            } else {
+              socket.emit('error', { message: 'Server error loading game' });
+            }
+            return;
+          }
+          pendingGameSetup.delete(game_id);
+        }
+
+        // After awaiting, the game may still not be in activeGames if setup failed
+        if (!activeGames.has(game_id)) {
+          socket.emit('error', { message: 'Game could not be loaded' });
+          return;
+        }
       }
 
       const state = activeGames.get(game_id);
@@ -128,6 +173,8 @@ io.on('connection', socket => {
         io.to(room).emit('game_started', {
           white_player_id: state.white_player_id, black_player_id: state.black_player_id,
           white_time: state.white_time, black_time: state.black_time,
+          white_name: state.white_name, black_name: state.black_name,
+          white_rating: state.white_rating, black_rating: state.black_rating,
         });
         await supabase.from('games').update({ is_live: true, game_state_fen: state.chess.fen() }).eq('id', game_id);
       }
