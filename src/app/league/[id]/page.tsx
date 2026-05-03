@@ -103,7 +103,7 @@ async function getData(league: string, season: number) {
       .order("id", { ascending: false }),
     supabase
       .from("players")
-      .select("id,full_name,ss4_rating,rating_deviation,current_tier")
+      .select("id,full_name,ss4_rating,rating_deviation")
       .eq("home_league", league)
       .eq("is_active", true)
       .order("ss4_rating", { ascending: false }),
@@ -132,9 +132,9 @@ export default async function LeaguePage({
   const hasStandings = (premier?.length ?? 0) > 0 || (dev?.length ?? 0) > 0;
   const hasPlayers = (players?.length ?? 0) > 0;
   const premierPlayers =
-    players?.filter((p) => p.current_tier === "premier") ?? [];
+    players ?? [];
   const devPlayers =
-    players?.filter((p) => p.current_tier === "development") ?? [];
+    [] as typeof players;
 
   return (
     <div className="max-w-5xl mx-auto px-4 py-10 space-y-10">
@@ -213,11 +213,11 @@ export default async function LeaguePage({
                 </div>
               </div>
             )}
-            {devPlayers.length > 0 && (
+            {(devPlayers ?? []).length > 0 && (
               <div>
                 <div className="section-label mb-2">Development Tier</div>
                 <div className="card divide-y divide-ink-700/50">
-                  {devPlayers.map((p, i) => (
+                  {(devPlayers ?? []).map((p, i) => (
                     <div
                       key={p.id}
                       className="flex items-center gap-2 px-3 py-2"

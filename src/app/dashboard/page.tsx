@@ -116,7 +116,7 @@ export default function DashboardPage() {
             {player.full_name}
           </h1>
           <div className="text-ink-400 text-sm mt-1 capitalize">
-            {player.home_league?.replace("_", " ")} · {player.current_tier} Tier
+            {player.home_league ? player.home_league.replace(/_/g, " ").replace(/\b\w/g, (ch: string) => ch.toUpperCase()) : "Unassigned"}
           </div>
         </div>
         <div className="text-right">
@@ -237,7 +237,7 @@ export default function DashboardPage() {
       {/* Quick links */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         {[
-          { href: "/calibrate", icon: "🎯", label: "Bot Calibration" },
+          { href: "/calibrate", icon: "🎯", label: "Rating Calibration" },
           { href: "/champions-league", icon: "🏆", label: "Champions League" },
           { href: "/players", icon: "👥", label: "All Players" },
           { href: "/hall-of-champions", icon: "⭐", label: "Hall of Fame" },

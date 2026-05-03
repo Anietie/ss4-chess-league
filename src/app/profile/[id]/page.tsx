@@ -75,12 +75,12 @@ export default async function ProfilePage({
               </span>
               <span
                 className={
-                  player.current_tier === "premier"
+                  player.home_league === "league_1"
                     ? "tier-pill-premier"
                     : "tier-pill-development"
                 }
               >
-                {player.current_tier}
+                {player.home_league ? player.home_league.replace(/_/g, " ") : "Unassigned"}
               </span>
             </div>
             <h1 className="font-display text-3xl font-bold text-chalk">

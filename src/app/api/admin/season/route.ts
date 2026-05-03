@@ -79,7 +79,7 @@ export async function POST(req: NextRequest) {
       const promoted = devStandings.slice(0, 2);
  
       for (const p of relegated) {
-        await supabase.from('players').update({ current_tier: 'development' }).eq('id', p.player_id);
+        // tier removed
         changes.push({ player_id: p.player_id, action: 'relegated', league, from: 'premier', to: 'development' });
         await supabase.from('notifications').insert({
           player_id: p.player_id, type: 'promotion_relegation', title: 'Relegated to Development Tier',
@@ -88,7 +88,7 @@ export async function POST(req: NextRequest) {
       }
  
       for (const p of promoted) {
-        await supabase.from('players').update({ current_tier: 'premier' }).eq('id', p.player_id);
+        // tier removed
         changes.push({ player_id: p.player_id, action: 'promoted', league, from: 'development', to: 'premier' });
         await supabase.from('notifications').insert({
           player_id: p.player_id, type: 'promotion_relegation', title: 'Promoted to Premier Tier!',

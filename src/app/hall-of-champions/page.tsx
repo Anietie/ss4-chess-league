@@ -15,7 +15,7 @@ async function getHallData() {
   ] = await Promise.all([
     supabase.from('seasons').select('*').eq('status', 'complete').order('id'),
     supabase.from('player_badges').select('*, player:players(id, full_name, home_league, ss4_rating)').order('awarded_at', { ascending: false }),
-    supabase.from('players').select('id, full_name, ss4_rating, rating_deviation, home_league, current_tier, games_played, is_provisional').eq('is_active', true).order('ss4_rating', { ascending: false }).limit(20),
+    supabase.from('players').select('id, full_name, ss4_rating, rating_deviation, home_league, games_played, is_provisional').eq('is_active', true).order('ss4_rating', { ascending: false }).limit(20),
     supabase.from('champions_league').select('*, player:players(id, full_name)').eq('won_cl', true),
   ]);
   return { seasons: seasons || [], badges: badges || [], topRated: topRated || [], clWinners: clWinners || [] };
@@ -143,7 +143,7 @@ export default async function HallOfChampionsPage() {
                       <span className={isL1 ? 'league-pill-l1' : 'league-pill-l2'}>{leagueDisplayName(p.home_league)}</span>
                     </td>
                     <td className="py-3 px-4">
-                      <span className={p.current_tier === 'premier' ? 'tier-pill-premier' : 'tier-pill-development'}>{p.current_tier}</span>
+                      
                     </td>
                     <td className="py-3 px-4 font-mono font-bold text-chalk">{rating}</td>
                     <td className="py-3 px-4 text-ink-400 text-center">{p.games_played}</td>

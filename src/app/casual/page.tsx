@@ -133,12 +133,14 @@ export default function CasualPage() {
       const d = await r.json();
       if (!r.ok) { alert(d.error); return; }
 
+      // Both open and direct: go to waiting screen + start socket subscription
+      setPendingChallengeId(d.challenge.id);
+      setWaitingForOpponent(true);
       if (!challengedId) {
-        // Open challenge — show share link
+        // Open challenge — also show share link on waiting screen
         const link = `${window.location.origin}/casual/${d.challenge.id}`;
         setShareLink(link);
       } else {
-        alert(`Challenge sent to ${selectedPlayer?.full_name}!`);
         setSelectedPlayer(null);
         setSearchQuery('');
       }

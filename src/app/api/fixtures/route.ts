@@ -37,8 +37,7 @@ export async function POST(req: NextRequest) {
     .from("players")
     .select("id, full_name, ss4_rating")
     .eq("home_league", league)
-    .eq("current_tier", tier)
-    .eq("is_active", true)
+        .eq("is_active", true)
     .eq("is_suspended", false);
 
   if (pErr) return NextResponse.json({ error: pErr.message }, { status: 500 });

@@ -13,7 +13,7 @@ export interface Player {
   id: string; full_name: string; email: string;
   chess_com_username?: string; lichess_username?: string; whatsapp_number?: string;
   year_started_chess?: number; joining_season: number;
-  home_league: League; current_tier: Tier;
+  home_league: League;
   ss4_rating: number; rating_deviation: number; volatility: number;
   is_provisional: boolean; games_played: number;
   seed_rating?: number; seed_source?: string;

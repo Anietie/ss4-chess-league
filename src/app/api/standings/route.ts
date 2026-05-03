@@ -36,9 +36,9 @@ export async function GET(req: NextRequest) {
   // Fetch players in this tier
   const { data: players, error: pErr } = await supabase
     .from('players')
-    .select('id, full_name, ss4_rating, rating_deviation, home_league, current_tier')
+    .select('id, full_name, ss4_rating, rating_deviation, home_league')
     .eq('home_league', league)
-    .eq('current_tier', tier);
+    ;
 
   if (pErr) return NextResponse.json({ error: pErr.message }, { status: 500 });
   if (!players?.length) return NextResponse.json({ standings: [] });

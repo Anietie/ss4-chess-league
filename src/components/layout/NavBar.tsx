@@ -72,7 +72,7 @@ export function NavBar() {
       const { data } = await supabase
         .from("players")
         .select(
-          "id, full_name, home_league, ss4_rating, rating_deviation, current_tier",
+          "id, full_name, home_league, ss4_rating, rating_deviation, is_provisional",
         )
         .eq("email", email)
         .single();

@@ -93,7 +93,6 @@ export async function POST(req: NextRequest) {
       year_started_chess:   year_started_chess ? Number(year_started_chess) : null,
       joining_season:       season.id,
       home_league:          'unassigned',
-      current_tier:         'unassigned',
       ss4_rating:           needsCalibration ? 1000 : seedRating,
       rating_deviation:     200,
       volatility:           0.06,

@@ -29,16 +29,8 @@ export default function RootLayout({
 
 export async function Footer() {
   const supabase = createServerClient();
-  const { data: season } = await supabase
-    .from("seasons")
-    .select("id, name, status")
-    .in("status", ["active", "playoffs", "registration", "champions_league"])
-    .order("id", { ascending: false })
-    .limit(1)
-    .single();
-
-  const seasonLabel =
-    season?.name ?? (season ? `Season ${season.id}` : "Pre-Season");
+  const { data: { session } } = await supabase.auth.getSession();
+  const isSignedIn = !!session?.user;
 
   return (
     <footer className="border-t border-ink-700 bg-ink-900 mt-16">
@@ -49,22 +41,19 @@ export async function Footer() {
             SS4 Chess League
           </span>
         </div>
-        <div className="text-center">
-          The Board Remembers
-        </div>
+        <div className="text-center">The Board Remembers</div>
         <div className="flex items-center gap-4">
-          <a
-            href="/hall-of-champions"
-            className="hover:text-ink-300 transition-colors"
-          >
+          <a href="/hall-of-champions" className="hover:text-ink-300 transition-colors">
             Hall of Fame
           </a>
           <a href="/players" className="hover:text-ink-300 transition-colors">
             Players
           </a>
-          <a href="/register" className="hover:text-ink-300 transition-colors">
-            Register
-          </a>
+          {!isSignedIn && (
+            <a href="/register" className="hover:text-ink-300 transition-colors">
+              Register
+            </a>
+          )}
         </div>
       </div>
     </footer>
