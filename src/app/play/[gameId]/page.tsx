@@ -292,6 +292,7 @@ export default function GameRoomPage() {
 
   // TAP-TO-MOVE HANDLER
   function onSquareClick(square: any) {
+    const myPlayerId = myPlayerIdRef.current;
     if (status !== "active" || !myPlayerId) return;
     const isMyTurn =
       (chess.turn() === "w" && myColorRef.current === "white") ||
@@ -317,6 +318,7 @@ export default function GameRoomPage() {
 
   const onDrop = useCallback(
     (src: string, tgt: string) => {
+      const myPlayerId = myPlayerIdRef.current;
       const sock = socketRef.current;
       if (status !== "active" || !sock) return false;
       const isMyTurn =
@@ -330,7 +332,7 @@ export default function GameRoomPage() {
       });
       return true;
     },
-    [status, chess, gameId, myPlayerId],
+    [status, chess, gameId],
   );
 
   if (status === "unauthorized")
@@ -356,7 +358,7 @@ export default function GameRoomPage() {
     );
 
   const orientation = myColorRef.current === "black" ? "black" : "white";
-  const isSpectator = !myPlayerId || myColorRef.current === null;
+  const isSpectator = !myPlayerIdRef.current || myColorRef.current === null;
 
   return (
     <div className="max-w-6xl mx-auto px-4 py-6">
@@ -447,7 +449,7 @@ export default function GameRoomPage() {
                 onClick={() =>
                   socketRef.current?.emit("offer_draw", {
                     game_id: gameId,
-                    player_id: myPlayerId,
+                    player_id: myPlayerIdRef.current,
                   })
                 }
                 className="btn-ghost flex-1 gap-2 text-sm"
@@ -459,7 +461,7 @@ export default function GameRoomPage() {
                   confirm("Resign?") &&
                   socketRef.current?.emit("resign", {
                     game_id: gameId,
-                    player_id: myPlayerId,
+                    player_id: myPlayerIdRef.current,
                   })
                 }
                 className="btn-danger flex-1 gap-2 text-sm"
