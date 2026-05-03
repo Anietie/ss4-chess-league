@@ -91,45 +91,68 @@ io.on('connection', socket => {
   socket.on('join_game', async ({ game_id, player_id, auth_user_id, is_spectator }) => {
     const room = `game:${game_id}`;
 
+    console.log(`\n${'='.repeat(60)}`);
+    console.log(`[join_game] socket=${socket.id} game=${game_id}`);
+    console.log(`[join_game] client sent  → auth_user_id=${auth_user_id ?? 'MISSING'} | player_id=${player_id ?? 'MISSING'} | is_spectator=${is_spectator}`);
+
     // ── Server-side player ID resolution ──────────────────────────────────────
-    // The client passes auth_user_id (Supabase auth UUID, always reliable from
-    // getUser()). We resolve the actual players.id here using the service role
-    // key, which bypasses RLS and is guaranteed to find the row even if
-    // auth_user_id was added after some players registered.
-    // The client-supplied player_id is used only as a fallback.
     let resolvedPlayerId = player_id ?? null;
+    let resolveMethod = 'client_provided';
+
     if (auth_user_id) {
       try {
-        const { data: playerRow } = await supabase
+        const { data: playerRow, error: lookupErr } = await supabase
           .from('players')
-          .select('id')
+          .select('id, full_name, auth_user_id')
           .eq('auth_user_id', auth_user_id)
           .single();
-        if (playerRow?.id) resolvedPlayerId = playerRow.id;
+
+        console.log(`[join_game] auth_user_id lookup → data=${JSON.stringify(playerRow)} | error=${lookupErr?.message ?? 'none'}`);
+
+        if (playerRow?.id) {
+          resolvedPlayerId = playerRow.id;
+          resolveMethod = 'auth_user_id_lookup';
+          console.log(`[join_game] ✓ resolved player_id=${resolvedPlayerId} via auth_user_id (name: ${playerRow.full_name})`);
+        } else {
+          console.warn(`[join_game] ✗ auth_user_id lookup returned no row — auth_user_id column may be NULL in DB for this player`);
+          // Last-ditch: look up by the player_id hint and verify it's in the game
+          if (player_id) {
+            console.log(`[join_game] falling back to client player_id=${player_id}`);
+            resolveMethod = 'client_fallback';
+          }
+        }
       } catch (e) {
-        console.warn('[join_game] auth_user_id lookup failed, falling back to client player_id:', e?.message);
+        console.error(`[join_game] auth_user_id lookup threw:`, e?.message);
       }
+    } else {
+      console.warn(`[join_game] No auth_user_id received from client — old client code? Using player_id=${player_id ?? 'null'}`);
     }
 
     // Recompute is_spectator: only a spectator if we couldn't resolve any player ID
     const effectiveIsSpectator = !resolvedPlayerId || is_spectator === true;
+    console.log(`[join_game] resolvedPlayerId=${resolvedPlayerId ?? 'NULL'} | resolveMethod=${resolveMethod} | effectiveIsSpectator=${effectiveIsSpectator}`);
+
     try {
       if (!activeGames.has(game_id)) {
-        // --- Race-condition guard ---
-        // If another join_game for this game is already doing the DB fetch,
-        // wait for it instead of launching a duplicate fetch that would
-        // overwrite the state and lose the first player's connected entry.
         if (pendingGameSetup.has(game_id)) {
+          console.log(`[join_game] waiting for pending setup...`);
           try { await pendingGameSetup.get(game_id); } catch { /* handled below */ }
         } else {
           const setupPromise = (async () => {
             const { data: game, error: gameError } = await supabase.from('games')
-              .select(`*, white_player:players!games_white_player_id_fkey(full_name, ss4_rating), black_player:players!games_black_player_id_fkey(full_name, ss4_rating)`)
+              .select(`*, white_player:players!games_white_player_id_fkey(full_name, ss4_rating, auth_user_id), black_player:players!games_black_player_id_fkey(full_name, ss4_rating, auth_user_id)`)
               .eq('id', game_id).single();
 
             if (gameError || !game) {
+              console.error(`[join_game] game DB fetch error: ${gameError?.message} | game=${JSON.stringify(game)}`);
               throw { type: 'not_found' };
             }
+
+            console.log(`[join_game] game loaded from DB:`);
+            console.log(`  result='${game.result}' white_player_id=${game.white_player_id} black_player_id=${game.black_player_id}`);
+            console.log(`  white_player=${JSON.stringify(game.white_player)}`);
+            console.log(`  black_player=${JSON.stringify(game.black_player)}`);
+
             if (game.result !== '*') {
               throw { type: 'already_finished', result: game.result };
             }
@@ -141,7 +164,6 @@ io.on('connection', socket => {
               white_rating: game.white_player?.ss4_rating || 1200,
               black_rating: game.black_player?.ss4_rating || 1200,
             };
-            // Only write to the map if not already set by a concurrent join
             if (!activeGames.has(game_id)) {
               activeGames.set(game_id, createGameState(enriched));
             }
@@ -164,7 +186,6 @@ io.on('connection', socket => {
           pendingGameSetup.delete(game_id);
         }
 
-        // After awaiting, the game may still not be in activeGames if setup failed
         if (!activeGames.has(game_id)) {
           socket.emit('error', { message: 'Game could not be loaded' });
           return;
@@ -172,15 +193,27 @@ io.on('connection', socket => {
       }
 
       const state = activeGames.get(game_id);
+
+      // ── THE CRITICAL COMPARISON — log everything ───────────────────────────
+      console.log(`[join_game] GAME STATE in memory:`);
+      console.log(`  white_player_id=${state.white_player_id}`);
+      console.log(`  black_player_id=${state.black_player_id}`);
+      console.log(`  state.connected BEFORE add: [${[...state.connected].join(', ')}]`);
+      console.log(`  resolvedPlayerId being added: ${resolvedPlayerId}`);
+      console.log(`  match white? ${resolvedPlayerId === state.white_player_id}`);
+      console.log(`  match black? ${resolvedPlayerId === state.black_player_id}`);
+
       socket.join(room);
       socket.data = { game_id, player_id: resolvedPlayerId, is_spectator: effectiveIsSpectator };
 
       if (effectiveIsSpectator) {
         state.spectators.add(socket.id);
+        console.log(`[join_game] → joined as SPECTATOR`);
       } else {
         state.connected.add(resolvedPlayerId);
         const t = state.disc_timers.get(resolvedPlayerId);
         if (t) { clearTimeout(t); state.disc_timers.delete(resolvedPlayerId); }
+        console.log(`[join_game] → joined as PLAYER | connected now: [${[...state.connected].join(', ')}]`);
       }
 
       socket.emit('game_state', {
@@ -189,21 +222,21 @@ io.on('connection', socket => {
         current_turn: state.chess.turn(), status: state.status,
         move_history: state.chess.history({ verbose: true }),
         connected_players: [...state.connected], spectator_count: state.spectators.size,
-        // Include player identities so client can set color even if game_started was missed
         white_player_id: state.white_player_id,
         black_player_id: state.black_player_id,
         white_name: state.white_name,
         black_name: state.black_name,
         white_rating: state.white_rating,
         black_rating: state.black_rating,
-        // Echo the resolved player ID back so the client knows who they are
-        // without relying on a client-side DB lookup that can fail
         your_player_id: effectiveIsSpectator ? null : resolvedPlayerId,
       });
 
-      if (state.status === 'waiting' &&
-          state.connected.has(state.white_player_id) &&
-          state.connected.has(state.black_player_id)) {
+      const hasWhite = state.connected.has(state.white_player_id);
+      const hasBlack = state.connected.has(state.black_player_id);
+      console.log(`[join_game] start-check → status=${state.status} | hasWhite=${hasWhite} | hasBlack=${hasBlack}`);
+
+      if (state.status === 'waiting' && hasWhite && hasBlack) {
+        console.log(`[join_game] ✓✓✓ BOTH PLAYERS CONNECTED — starting game!`);
         state.status = 'active';
         state.last_move_ts = Date.now();
         io.to(room).emit('game_started', {
@@ -213,6 +246,8 @@ io.on('connection', socket => {
           white_rating: state.white_rating, black_rating: state.black_rating,
         });
         await supabase.from('games').update({ is_live: true, game_state_fen: state.chess.fen() }).eq('id', game_id);
+      } else {
+        console.log(`[join_game] ✗ game NOT starting yet (waiting for the other player or state mismatch)`);
       }
 
       io.to(room).emit('player_joined', {
@@ -220,7 +255,7 @@ io.on('connection', socket => {
         connected_players: [...state.connected], spectator_count: state.spectators.size,
       });
     } catch (err) {
-      console.error('[join_game]', err);
+      console.error('[join_game] unhandled error:', err);
       socket.emit('error', { message: 'Server error' });
     }
   });
@@ -378,6 +413,37 @@ app.get('/health', (req, res) => res.json({
   active_games: activeGames.size, 
   clients: io.engine.clientsCount
 }));
+
+// ── Debug: inspect any active game's state ───────────────────────────────────
+// Call GET /debug/game/<game_id> to see exactly what player IDs are stored
+// vs what's in state.connected. No secret required — remove after debugging.
+app.get('/debug/game/:gameId', (req, res) => {
+  const { gameId } = req.params;
+  const state = activeGames.get(gameId);
+  if (!state) {
+    return res.json({
+      found: false,
+      active_game_ids: [...activeGames.keys()],
+      message: 'Game not in memory — not yet joined or already ended'
+    });
+  }
+  res.json({
+    found: true,
+    game_id: gameId,
+    status: state.status,
+    white_player_id: state.white_player_id,
+    black_player_id: state.black_player_id,
+    white_name: state.white_name,
+    black_name: state.black_name,
+    connected: [...state.connected],
+    spectators: state.spectators.size,
+    has_white_connected: state.connected.has(state.white_player_id),
+    has_black_connected: state.connected.has(state.black_player_id),
+    white_match: state.connected.has(state.white_player_id),
+    black_match: state.connected.has(state.black_player_id),
+    fen: state.chess.fen(),
+  });
+});
 
 const PORT = process.env.SOCKET_PORT || 3001;
 httpServer.listen(PORT, () => console.log(`[SS4] Game server on :${PORT}`));
