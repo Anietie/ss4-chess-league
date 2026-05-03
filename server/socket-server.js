@@ -57,9 +57,26 @@ function createGameState(game) {
   const [baseStr, incStr] = (game.time_control || '600+5').split('+');
   const baseMs = parseInt(baseStr) * 1000;
   const incMs = parseInt(incStr || '0') * 1000;
+
+  // Set PGN headers upfront so every chess.pgn() call throughout the game
+  // produces a properly-tagged PGN with real player names, date, etc.
+  const cs = new Chess();
+  const today = new Date().toISOString().split('T')[0].replace(/-/g, '.');
+  cs.header(
+    'Event',       'SS4 Chess League',
+    'Site',        'ss4-chess-league.vercel.app',
+    'Date',        today,
+    'White',       game.white_name  || 'White',
+    'Black',       game.black_name  || 'Black',
+    'WhiteElo',    String(Math.round(game.white_rating || 1200)),
+    'BlackElo',    String(Math.round(game.black_rating || 1200)),
+    'TimeControl', game.time_control || '600+5',
+    'Result',      '*',
+  );
+
   return {
     id: game.id,
-    chess: new Chess(),
+    chess: cs,
     white_player_id: game.white_player_id,
     black_player_id: game.black_player_id,
     // Player info populated after DB fetch
@@ -358,18 +375,20 @@ async function endGame(gameId, result, pgn) {
   state.status = 'ended'; state.result = result;
   state.disc_timers.forEach(t => clearTimeout(t));
 
-  io.to(`game:${gameId}`).emit('game_ended', { result, pgn, fen: state.chess.fen() });
+  // Stamp the Result header so the PGN shows the real result (not '*').
+  state.chess.header('Result', result);
+  const finalPgn = state.chess.pgn();
+
+  io.to(`game:${gameId}`).emit('game_ended', { result, pgn: finalPgn, fen: state.chess.fen() });
+  queueAnalysis(gameId, finalPgn);
 
   // ── STEP 1: Persist result + PGN directly to DB ───────────────────────────
-  // This MUST happen before the ratings API call. If the API call fails
-  // (wrong secret, network error, etc.) the game data is still saved so:
-  //   • The review page can load the PGN
-  //   • Navigating back shows game_already_finished (result !== '*')
-  //   • The PGN download on the ended game screen works
+  // Must happen before the ratings API call so game data is always saved
+  // even if the ratings update fails (wrong secret, network error, etc.)
   const now = new Date().toISOString();
   const { error: saveErr } = await supabase.from('games').update({
     result,
-    pgn,
+    pgn: finalPgn,
     is_live: false,
     played_at: now,
   }).eq('id', gameId);
@@ -380,9 +399,6 @@ async function endGame(gameId, result, pgn) {
   }
 
   // ── STEP 2: Call ratings API (Glicko-2 update + standings) ────────────────
-  // Handled by the Next.js API route — failures are logged but don't block game saving.
-  queueAnalysis(gameId, pgn);
-
   const appUrl = process.env.NEXT_PUBLIC_APP_URL;
   const secret = process.env.INTERNAL_API_SECRET;
 
@@ -396,7 +412,7 @@ async function endGame(gameId, result, pgn) {
           'Content-Type': 'application/json',
           'x-internal-secret': secret || '',
         },
-        body: JSON.stringify({ game_id: gameId, result, pgn }),
+        body: JSON.stringify({ game_id: gameId, result, pgn: finalPgn }),
       });
       if (!res.ok) {
         const body = await res.text().catch(() => '(no body)');

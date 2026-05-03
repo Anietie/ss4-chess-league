@@ -115,6 +115,7 @@ export default function GameRoomPage() {
     "loading" | "waiting" | "active" | "ended" | "unauthorized"
   >("loading");
   const [result, setResult] = useState<string | null>(null);
+  const [finalPgn, setFinalPgn] = useState<string | null>(null);
   const [moves, setMoves] = useState<string[]>([]);
   const [touchMode] = useState(isTouchDevice);
   const [drawOffered, setDrawOffered] = useState(false);
@@ -301,6 +302,7 @@ export default function GameRoomPage() {
       sock.on("game_ended", (d) => {
         setStatus("ended");
         setResult(d.result);
+        if (d.pgn) setFinalPgn(d.pgn); // server sends the complete, correctly-headered PGN
         setWhite((p) => ({ ...p, isActive: false }));
         setBlack((p) => ({ ...p, isActive: false }));
         if (myColorRef.current) {
@@ -551,7 +553,10 @@ export default function GameRoomPage() {
               </Link>
               <button
                 onClick={() => {
-                  const pgn = chess.pgn();
+                  // Use the PGN received from the server — it has correct headers
+                  // (player names, Elo, date, result). Falling back to chess.pgn()
+                  // would produce '[Result "*"]' and no player names.
+                  const pgn = finalPgn ?? chess.pgn();
                   const blob = new Blob([pgn], { type: "text/plain" });
                   const a = document.createElement("a");
                   a.href = URL.createObjectURL(blob);
