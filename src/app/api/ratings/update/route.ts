@@ -47,21 +47,29 @@ export async function POST(req: NextRequest) {
   ]);
 
   // Update standings (football scoring: W=3, D=1, L=0)
-  if (game.tier && game.tier !== 'n_a') {
+  // No longer gated on game.tier — the league system has no tiers.
+  // Casual and calibration games are excluded by league name.
+  const COMPETITIVE_LEAGUES = [
+    'league_1','league_2','league_3','league_4','league_5','league_6',
+    'champions_league','continental_shield','open_cup','newcomer_shield','blitz',
+  ];
+  if (COMPETITIVE_LEAGUES.includes(game.league)) {
     const isChessScoring = ['champions_league','continental_shield'].includes(game.league);
     const wPts = result === '1-0' ? (isChessScoring ? 1 : 3) : result === '0.5-0.5' ? (isChessScoring ? 0.5 : 1) : 0;
     const bPts = result === '0-1' ? (isChessScoring ? 1 : 3) : result === '0.5-0.5' ? (isChessScoring ? 0.5 : 1) : 0;
+    // Use 'n_a' as the unified tier key — DB unique constraint is (season,league,tier,player_id)
+    const effectiveTier = 'n_a';
 
     for (const [pid, pts, win, draw, loss] of [
       [white.id, wPts, result==='1-0'?1:0, result==='0.5-0.5'?1:0, result==='0-1'?1:0],
       [black.id, bPts, result==='0-1'?1:0, result==='0.5-0.5'?1:0, result==='1-0'?1:0],
     ] as any[]) {
       const { data: s } = await supabase.from('standings').select('*')
-        .eq('season', game.season).eq('league', game.league).eq('tier', game.tier).eq('player_id', pid).single();
+        .eq('season', game.season).eq('league', game.league).eq('tier', effectiveTier).eq('player_id', pid).single();
       if (s) {
         await supabase.from('standings').update({ points: s.points + pts, wins: s.wins + win, draws: s.draws + draw, losses: s.losses + loss, games_played: s.games_played + 1 }).eq('id', s.id);
       } else {
-        await supabase.from('standings').insert({ season: game.season, league: game.league, tier: game.tier, player_id: pid, points: pts, wins: win, draws: draw, losses: loss, games_played: 1 });
+        await supabase.from('standings').insert({ season: game.season, league: game.league, tier: effectiveTier, player_id: pid, points: pts, wins: win, draws: draw, losses: loss, games_played: 1 });
       }
     }
   }

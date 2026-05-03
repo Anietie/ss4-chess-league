@@ -276,7 +276,15 @@ export default function GameRoomPage() {
       });
 
       sock.on("move_made", (d) => {
-        chess.load(d.fen);
+        // chess.load(fen) only loads a position — it wipes all move history.
+        // chess.loadPgn(pgn) restores the full game including all past moves,
+        // which is what we need for move history display and sound detection.
+        if (d.pgn) {
+          chess.loadPgn(d.pgn);
+        } else {
+          // Fallback for older server versions that don't send pgn
+          chess.load(d.fen);
+        }
         const history = chess.history({ verbose: true });
         const lastMove = history[history.length - 1];
         if (lastMove?.promotion) play("promote");
@@ -284,7 +292,7 @@ export default function GameRoomPage() {
         else if (chess.isCheck()) play("check");
         else if (lastMove?.captured) play("capture");
         else play("move");
-        setFen(d.fen);
+        setFen(chess.fen());
         setMoves(chess.history());
         setWhite((p) => ({ ...p, timeMs: d.white_time, isActive: d.current_turn === "w" }));
         setBlack((p) => ({ ...p, timeMs: d.black_time, isActive: d.current_turn === "b" }));

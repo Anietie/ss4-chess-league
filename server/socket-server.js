@@ -287,6 +287,7 @@ io.on('connection', socket => {
 
       io.to(`game:${game_id}`).emit('move_made', {
         move: result, fen: state.chess.fen(),
+        pgn: state.chess.pgn(),   // ← needed by client to rebuild full move history
         white_time: state.white_time, black_time: state.black_time,
         current_turn: state.chess.turn(), move_number: state.chess.history().length,
       });
@@ -359,17 +360,56 @@ async function endGame(gameId, result, pgn) {
 
   io.to(`game:${gameId}`).emit('game_ended', { result, pgn, fen: state.chess.fen() });
 
-  // Call the analysis queue function here
+  // ── STEP 1: Persist result + PGN directly to DB ───────────────────────────
+  // This MUST happen before the ratings API call. If the API call fails
+  // (wrong secret, network error, etc.) the game data is still saved so:
+  //   • The review page can load the PGN
+  //   • Navigating back shows game_already_finished (result !== '*')
+  //   • The PGN download on the ended game screen works
+  const now = new Date().toISOString();
+  const { error: saveErr } = await supabase.from('games').update({
+    result,
+    pgn,
+    is_live: false,
+    played_at: now,
+  }).eq('id', gameId);
+  if (saveErr) {
+    console.error('[endGame] Failed to save game result to DB:', saveErr.message);
+  } else {
+    console.log(`[endGame] ✓ Game ${gameId} saved: result=${result}`);
+  }
+
+  // ── STEP 2: Call ratings API (Glicko-2 update + standings) ────────────────
+  // Handled by the Next.js API route — failures are logged but don't block game saving.
   queueAnalysis(gameId, pgn);
 
-  try {
-    await fetch(`${process.env.NEXT_PUBLIC_APP_URL}/api/ratings/update`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-internal-secret': process.env.INTERNAL_API_SECRET || '' },
-      body: JSON.stringify({ game_id: gameId, result, pgn }),
-    });
-    await supabase.from('games').update({ is_live: false }).eq('id', gameId);
-  } catch (err) { console.error('[endGame]', err); }
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL;
+  const secret = process.env.INTERNAL_API_SECRET;
+
+  if (!appUrl) {
+    console.error('[endGame] NEXT_PUBLIC_APP_URL is not set — ratings will not be updated');
+  } else {
+    try {
+      const res = await fetch(`${appUrl}/api/ratings/update`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-internal-secret': secret || '',
+        },
+        body: JSON.stringify({ game_id: gameId, result, pgn }),
+      });
+      if (!res.ok) {
+        const body = await res.text().catch(() => '(no body)');
+        console.error(`[endGame] ratings/update returned ${res.status}: ${body}`);
+        console.error('[endGame] Check that INTERNAL_API_SECRET matches on both Railway and Vercel');
+      } else {
+        const data = await res.json().catch(() => null);
+        console.log(`[endGame] ✓ Ratings updated. White: ${data?.white_change >= 0 ? '+' : ''}${Math.round(data?.white_change ?? 0)} | Black: ${data?.black_change >= 0 ? '+' : ''}${Math.round(data?.black_change ?? 0)}`);
+      }
+    } catch (err) {
+      console.error('[endGame] ratings/update fetch threw:', err?.message);
+    }
+  }
 
   setTimeout(() => activeGames.delete(gameId), 30_000);
 }
