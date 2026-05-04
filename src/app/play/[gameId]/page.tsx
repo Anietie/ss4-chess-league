@@ -562,7 +562,7 @@ export default function GameRoomPage() {
           {status === "ended" && (
             <div className="flex gap-2">
               <Link
-                href={`/game/${gameId}`}
+                href={`/game/${gameId}/review`}
                 className="btn-ghost flex-1 justify-center gap-2 text-sm"
               >
                 <RotateCcw size={14} /> Analysis

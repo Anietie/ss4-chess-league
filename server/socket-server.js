@@ -431,24 +431,155 @@ async function endGame(gameId, result, pgn) {
 }
 
 
-// After game ends, queue Stockfish analysis
+// ── Position evaluator (material + piece-square tables) ──────────────────────
+// Used to produce analysis_json without needing a Stockfish server process.
+// Scores are in centipawns, always from White's perspective (positive = white winning).
+
+const PIECE_VALUES = { p: 100, n: 320, b: 330, r: 500, q: 900, k: 0 };
+
+// Piece-square tables (rank 0=rank8 for white, indexed [rank][file])
+const PST = {
+  p: [
+    [  0,  0,  0,  0,  0,  0,  0,  0],
+    [ 50, 50, 50, 50, 50, 50, 50, 50],
+    [ 10, 10, 20, 30, 30, 20, 10, 10],
+    [  5,  5, 10, 25, 25, 10,  5,  5],
+    [  0,  0,  0, 20, 20,  0,  0,  0],
+    [  5, -5,-10,  0,  0,-10, -5,  5],
+    [  5, 10, 10,-20,-20, 10, 10,  5],
+    [  0,  0,  0,  0,  0,  0,  0,  0],
+  ],
+  n: [
+    [-50,-40,-30,-30,-30,-30,-40,-50],
+    [-40,-20,  0,  0,  0,  0,-20,-40],
+    [-30,  0, 10, 15, 15, 10,  0,-30],
+    [-30,  5, 15, 20, 20, 15,  5,-30],
+    [-30,  0, 15, 20, 20, 15,  0,-30],
+    [-30,  5, 10, 15, 15, 10,  5,-30],
+    [-40,-20,  0,  5,  5,  0,-20,-40],
+    [-50,-40,-30,-30,-30,-30,-40,-50],
+  ],
+  b: [
+    [-20,-10,-10,-10,-10,-10,-10,-20],
+    [-10,  0,  0,  0,  0,  0,  0,-10],
+    [-10,  0,  5, 10, 10,  5,  0,-10],
+    [-10,  5,  5, 10, 10,  5,  5,-10],
+    [-10,  0, 10, 10, 10, 10,  0,-10],
+    [-10, 10, 10, 10, 10, 10, 10,-10],
+    [-10,  5,  0,  0,  0,  0,  5,-10],
+    [-20,-10,-10,-10,-10,-10,-10,-20],
+  ],
+  r: [
+    [  0,  0,  0,  0,  0,  0,  0,  0],
+    [  5, 10, 10, 10, 10, 10, 10,  5],
+    [ -5,  0,  0,  0,  0,  0,  0, -5],
+    [ -5,  0,  0,  0,  0,  0,  0, -5],
+    [ -5,  0,  0,  0,  0,  0,  0, -5],
+    [ -5,  0,  0,  0,  0,  0,  0, -5],
+    [ -5,  0,  0,  0,  0,  0,  0, -5],
+    [  0,  0,  0,  5,  5,  0,  0,  0],
+  ],
+  q: [
+    [-20,-10,-10, -5, -5,-10,-10,-20],
+    [-10,  0,  0,  0,  0,  0,  0,-10],
+    [-10,  0,  5,  5,  5,  5,  0,-10],
+    [ -5,  0,  5,  5,  5,  5,  0, -5],
+    [  0,  0,  5,  5,  5,  5,  0, -5],
+    [-10,  5,  5,  5,  5,  5,  0,-10],
+    [-10,  0,  5,  0,  0,  0,  0,-10],
+    [-20,-10,-10, -5, -5,-10,-10,-20],
+  ],
+  k: [
+    [-30,-40,-40,-50,-50,-40,-40,-30],
+    [-30,-40,-40,-50,-50,-40,-40,-30],
+    [-30,-40,-40,-50,-50,-40,-40,-30],
+    [-30,-40,-40,-50,-50,-40,-40,-30],
+    [-20,-30,-30,-40,-40,-30,-30,-20],
+    [-10,-20,-20,-20,-20,-20,-20,-10],
+    [ 20, 20,  0,  0,  0,  0, 20, 20],
+    [ 20, 30, 10,  0,  0, 10, 30, 20],
+  ],
+};
+
+function evalPosition(chess) {
+  if (chess.isCheckmate()) return chess.turn() === 'w' ? -99999 : 99999;
+  if (chess.isDraw() || chess.isStalemate()) return 0;
+
+  let score = 0;
+  const board = chess.board();
+
+  for (let r = 0; r < 8; r++) {
+    for (let f = 0; f < 8; f++) {
+      const piece = board[r][f];
+      if (!piece) continue;
+      const val   = PIECE_VALUES[piece.type] ?? 0;
+      // PST: white pieces use table as-is (rank 0 = rank 8), black pieces mirror vertically
+      const pstRow = piece.color === 'w' ? r : 7 - r;
+      const bonus  = PST[piece.type]?.[pstRow]?.[f] ?? 0;
+      score += piece.color === 'w' ? (val + bonus) : -(val + bonus);
+    }
+  }
+  return score;
+}
+
+// Find best move via 1-ply search (good enough for identifying obvious blunders)
+function findBestMove(chess) {
+  const moves = chess.moves({ verbose: true });
+  if (!moves.length) return null;
+  const isWhite = chess.turn() === 'w';
+  let best = null;
+  let bestScore = isWhite ? -Infinity : Infinity;
+  // Search up to 30 moves (covers captures + checks first by chess.js ordering)
+  for (const move of moves.slice(0, 30)) {
+    chess.move(move);
+    const score = evalPosition(chess);
+    chess.undo();
+    if (isWhite ? score > bestScore : score < bestScore) {
+      bestScore = score;
+      best = move;
+    }
+  }
+  return best ? best.from + best.to : null;
+}
+
 async function queueAnalysis(gameId, pgn) {
   try {
     const chess = new Chess();
     chess.loadPgn(pgn);
     const moves = chess.history();
-    const fens = [];
+    if (!moves.length) return;
+
+    const evalPoints = [];
     const temp = new Chess();
-    fens.push(temp.fen());
-    for (const m of moves) { 
-      temp.move(m); 
-      fens.push(temp.fen()); 
+
+    // Evaluate starting position (ply 0)
+    evalPoints.push({
+      ply: 0,
+      score: evalPosition(temp),
+      best_move: findBestMove(temp),
+    });
+
+    // Evaluate after each move
+    for (let i = 0; i < moves.length; i++) {
+      temp.move(moves[i]);
+      evalPoints.push({
+        ply: i + 1,
+        score: evalPosition(temp),
+        best_move: i < moves.length - 1 ? findBestMove(temp) : null,
+      });
     }
-    
-    // Write FENs to DB for client-side analysis pickup
-    await supabase.from('games').update({ analysis_fens: JSON.stringify(fens) }).eq('id', gameId);
-  } catch (e) { 
-    console.error('Analysis queue error:', e); 
+
+    const { error } = await supabase.from('games')
+      .update({ analysis_json: evalPoints })
+      .eq('id', gameId);
+
+    if (error) {
+      console.error('[analysis] DB write failed:', error.message);
+    } else {
+      console.log(`[analysis] ✓ Game ${gameId}: ${evalPoints.length} positions evaluated`);
+    }
+  } catch (e) {
+    console.error('[analysis] Error:', e?.message ?? e);
   }
 }
 
