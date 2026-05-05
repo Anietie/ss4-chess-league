@@ -18,7 +18,7 @@ const Chessboard = dynamic(() => import('react-chessboard').then(m => m.Chessboa
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-interface EvalPoint { ply: number; score: number; best_move?: string; }
+interface EvalPoint { ply: number; score: number; best_move?: string; bestMove?: string; }
 
 type MoveClass = 'brilliant' | 'great' | 'best' | 'good' | 'inaccuracy' | 'mistake' | 'blunder' | 'miss';
 
@@ -199,11 +199,87 @@ export default function GameReviewPage() {
   const [orientation, setOrientation] = useState<'white' | 'black'>('white');
   const [analysisReady, setAnalysisReady] = useState(false);
   const [loading, setLoading] = useState(true);
+  // Stockfish progress state
+  const [sfRunning, setSfRunning] = useState(false);
+  const [sfProgress, setSfProgress] = useState(0);  // 0–100
+  const [sfTotal, setSfTotal] = useState(0);
   const moveListRef = useRef<HTMLDivElement>(null);
   const [arrows, setArrows] = useState<Arrow[]>([]);
 
-  // Poll for analysis_json if not yet ready
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // ── Run Stockfish depth-22 analysis client-side ──────────────────────────
+  // Called after game loads. Runs full MultiPV-3 depth-22 analysis,
+  // then POSTs to /api/games/[id]/anticheat to save (overwrites fallback PST data).
+  const runStockfishAnalysis = useCallback(async (fens: string[], gameId: string) => {
+    if (typeof window === 'undefined') return;
+    setSfRunning(true);
+    setSfProgress(0);
+    setSfTotal(fens.length);
+
+    try {
+      const { StockfishWorker } = await import('@/components/chess/StockfishWorker');
+      const sf = new StockfishWorker();
+      await sf.init();
+
+      const results: EvalPoint[] = [];
+      for (let i = 0; i < fens.length; i++) {
+        // Depth 22: highest practical depth — chess.com uses 18-22 for cloud analysis.
+        // MultiPV 3 captures top-3 candidates for anti-cheat correlation scoring.
+        const r = await sf.evaluateMultiPV(fens[i], 22, 3);
+        // Score is always from white's perspective
+        const score = i % 2 === 0 ? r.score : -r.score;
+        results.push({ ply: i, score, best_move: r.bestMove });
+        setSfProgress(Math.round(((i + 1) / fens.length) * 100));
+      }
+      sf.terminate();
+
+      // Save to DB via anticheat API (overwrites fallback PST data)
+      // The anticheat API expects { ply, score, bestMove, top3 } with camelCase bestMove
+      const anticheatPayload = results.map(r => ({
+        ply: r.ply,
+        score: r.score,
+        bestMove: r.best_move ?? '',
+        top3: r.best_move ? [r.best_move] : [],
+      }));
+      await fetch(`/api/games/${gameId}/anticheat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ analysis_json: anticheatPayload }),
+      }).catch(() => null);
+
+      // Update local state with the fresh high-quality analysis
+      setGame((g: any) => g ? { ...g, analysis_json: results } : g);
+      setAnalysisReady(true);
+      processEvalData(results);
+    } catch (err) {
+      console.error('[review] Stockfish analysis failed:', err);
+    } finally {
+      setSfRunning(false);
+    }
+  }, []);  // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ── Build annotated moves from eval data ─────────────────────────────────
+  const processEvalData = useCallback((evalData: EvalPoint[]) => {
+    setAnnotated(prev => {
+      // prev has sans/fens already; we just enrich with eval
+      return prev.map(m => {
+        const epBefore = evalData.find(e => e.ply === m.ply - 1)?.score ?? null;
+        const epAfter  = evalData.find(e => e.ply === m.ply)?.score ?? null;
+        let cpLoss: number | null = null;
+        if (epBefore !== null && epAfter !== null) {
+          cpLoss = m.ply % 2 === 1
+            ? Math.max(0, epBefore - epAfter)
+            : Math.max(0, epAfter - epBefore);
+        }
+        const ev = evalData.find(e => e.ply === m.ply - 1);
+        return {
+          ...m,
+          evalBefore: epBefore, evalAfter: epAfter, cpLoss,
+          classification: classifyMove(cpLoss, epBefore, epAfter),
+          bestMove: ev?.best_move ?? ev?.bestMove,
+        };
+      });
+    });
+  }, []);
 
   const processGame = useCallback((g: any) => {
     if (!g?.pgn) return;
@@ -219,11 +295,18 @@ export default function GameReviewPage() {
     for (const m of moves) { temp.move(m); fens.push(temp.fen()); }
     setPositions(fens);
 
-    // Build annotated moves using stored eval data
-    const evalData: EvalPoint[] = g.analysis_json ?? [];
+    // Build annotated moves skeleton (evals filled in below)
+    const evalData: EvalPoint[] = (g.analysis_json ?? []).map((e: any) => ({
+      ply: e.ply,
+      score: e.score,
+      // Handle both camelCase (StockfishWorker / anticheat API) and
+      // snake_case (legacy server queueAnalysis) field names
+      best_move: e.bestMove ?? e.best_move ?? '',
+    }));
+
     const evalMap = new Map<number, EvalPoint>(evalData.map(e => [e.ply, e]));
-    const ready = evalData.length > 0;
-    setAnalysisReady(ready);
+    const hasRealAnalysis = evalData.length > 0;
+    setAnalysisReady(hasRealAnalysis);
 
     const temp2 = new Chess();
     const annots: AnnotatedMove[] = moves.map((san, i) => {
@@ -235,12 +318,11 @@ export default function GameReviewPage() {
       const epBefore = evalMap.get(ply - 1)?.score ?? null;
       const epAfter  = evalMap.get(ply)?.score ?? null;
 
-      // cpLoss: from moving side's perspective (positive = they lost eval)
       let cpLoss: number | null = null;
       if (epBefore !== null && epAfter !== null) {
         cpLoss = ply % 2 === 1
-          ? Math.max(0, epBefore - epAfter)  // White moved: wants eval to go up
-          : Math.max(0, epAfter - epBefore); // Black moved: wants eval to go down
+          ? Math.max(0, epBefore - epAfter)
+          : Math.max(0, epAfter - epBefore);
       }
 
       return {
@@ -253,6 +335,8 @@ export default function GameReviewPage() {
 
     setAnnotated(annots);
     setCurIdx(fens.length - 1);
+
+    return { fens, hasRealAnalysis };
   }, []);
 
   useEffect(() => {
@@ -262,26 +346,19 @@ export default function GameReviewPage() {
       if (!res?.ok) { setLoading(false); return; }
       const { game: g } = await res.json();
       setGame(g);
-      processGame(g);
+      const result = processGame(g);
       setLoading(false);
 
-      // If analysis not done, poll every 4s
-      if (!g?.analysis_json?.length) {
-        pollRef.current = setInterval(async () => {
-          const r2 = await fetch(`/api/games/${id}`).catch(() => null);
-          if (!r2?.ok) return;
-          const { game: g2 } = await r2.json();
-          if (g2?.analysis_json?.length) {
-            clearInterval(pollRef.current!);
-            setGame(g2);
-            processGame(g2);
-          }
-        }, 4000);
-      }
+      if (!result) return;
+      const { fens, hasRealAnalysis } = result;
+
+      // Always run Stockfish depth-22 for the best possible analysis.
+      // The server-side fallback (PST evaluator, depth-1) is intentionally
+      // overwritten by this. Analysis is saved back to DB via anticheat API.
+      runStockfishAnalysis(fens, id as string);
     };
     load();
-    return () => { if (pollRef.current) clearInterval(pollRef.current); };
-  }, [id, processGame]);
+  }, [id, processGame, runStockfishAnalysis]);
 
   // Scroll move list to keep current move visible
   useEffect(() => {
@@ -403,11 +480,19 @@ export default function GameReviewPage() {
         </div>
       </div>
 
-      {/* ── Analysis pending banner ─────────────────────────────────────────── */}
-      {!analysisReady && (
-        <div className="mb-4 flex items-center gap-2.5 px-4 py-3 rounded-lg bg-ink-800 border border-ink-700 text-sm text-ink-300">
-          <Loader2 size={14} className="animate-spin text-gold flex-shrink-0" />
-          Engine analysis is running in the background — move classifications and accuracy will appear shortly.
+      {/* ── Analysis progress banner ─────────────────────────────────────────── */}
+      {sfRunning && (
+        <div className="mb-4 px-4 py-3 rounded-lg bg-ink-800 border border-ink-700 text-sm text-ink-300 space-y-2">
+          <div className="flex items-center gap-2.5">
+            <Loader2 size={14} className="animate-spin text-gold flex-shrink-0" />
+            <span>Stockfish depth-22 analysis running… {sfProgress}% ({Math.round(sfProgress * sfTotal / 100)}/{sfTotal} positions)</span>
+          </div>
+          <div className="h-1 rounded-full bg-ink-700 overflow-hidden">
+            <div
+              className="h-full rounded-full bg-gold transition-all duration-500"
+              style={{ width: `${sfProgress}%` }}
+            />
+          </div>
         </div>
       )}
 

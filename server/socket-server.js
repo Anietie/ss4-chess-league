@@ -89,6 +89,7 @@ function createGameState(game) {
     last_move_ts: null,
     status: 'waiting',   // waiting | active | ended
     result: null,
+    is_rated: game.is_rated ?? false,  // preserved so endGame can skip ratings for unrated games
     connected: new Set(),
     spectators: new Set(),
     disc_timers: new Map(),
@@ -399,33 +400,39 @@ async function endGame(gameId, result, pgn) {
   }
 
   // ── STEP 2: Call ratings API (Glicko-2 update + standings) ────────────────
-  const appUrl = process.env.NEXT_PUBLIC_APP_URL;
-  const secret = process.env.INTERNAL_API_SECRET;
-
-  if (!appUrl) {
-    console.error('[endGame] NEXT_PUBLIC_APP_URL is not set — ratings will not be updated');
+  // Skip entirely for unrated casual games — is_rated is stored in game state
+  // from the game row's is_rated column.
+  if (state.is_rated === false) {
+    console.log(`[endGame] Skipping ratings update — game is unrated (is_rated=false)`);
   } else {
-    try {
-      const res = await fetch(`${appUrl}/api/ratings/update`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-internal-secret': secret || '',
-        },
-        body: JSON.stringify({ game_id: gameId, result, pgn: finalPgn }),
-      });
-      if (!res.ok) {
-        const body = await res.text().catch(() => '(no body)');
-        console.error(`[endGame] ratings/update returned ${res.status}: ${body}`);
-        console.error('[endGame] Check that INTERNAL_API_SECRET matches on both Railway and Vercel');
-      } else {
-        const data = await res.json().catch(() => null);
-        console.log(`[endGame] ✓ Ratings updated. White: ${data?.white_change >= 0 ? '+' : ''}${Math.round(data?.white_change ?? 0)} | Black: ${data?.black_change >= 0 ? '+' : ''}${Math.round(data?.black_change ?? 0)}`);
+    const appUrl = process.env.NEXT_PUBLIC_APP_URL;
+    const secret = process.env.INTERNAL_API_SECRET;
+
+    if (!appUrl) {
+      console.error('[endGame] NEXT_PUBLIC_APP_URL is not set — ratings will not be updated');
+    } else {
+      try {
+        const res = await fetch(`${appUrl}/api/ratings/update`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-internal-secret': secret || '',
+          },
+          body: JSON.stringify({ game_id: gameId, result, pgn: finalPgn }),
+        });
+        if (!res.ok) {
+          const body = await res.text().catch(() => '(no body)');
+          console.error(`[endGame] ratings/update returned ${res.status}: ${body}`);
+          console.error('[endGame] Check that INTERNAL_API_SECRET matches on both Render and Vercel');
+        } else {
+          const data = await res.json().catch(() => null);
+          console.log(`[endGame] ✓ Ratings updated. White: ${data?.white_change >= 0 ? '+' : ''}${Math.round(data?.white_change ?? 0)} | Black: ${data?.black_change >= 0 ? '+' : ''}${Math.round(data?.black_change ?? 0)}`);
+        }
+      } catch (err) {
+        console.error('[endGame] ratings/update fetch threw:', err?.message);
       }
-    } catch (err) {
-      console.error('[endGame] ratings/update fetch threw:', err?.message);
     }
-  }
+  }  // end else (is_rated)
 
   setTimeout(() => activeGames.delete(gameId), 30_000);
 }
@@ -556,7 +563,7 @@ async function queueAnalysis(gameId, pgn) {
     evalPoints.push({
       ply: 0,
       score: evalPosition(temp),
-      best_move: findBestMove(temp),
+      bestMove: findBestMove(temp) ?? '',  // camelCase — matches anticheat API + review page
     });
 
     // Evaluate after each move
@@ -565,7 +572,7 @@ async function queueAnalysis(gameId, pgn) {
       evalPoints.push({
         ply: i + 1,
         score: evalPosition(temp),
-        best_move: i < moves.length - 1 ? findBestMove(temp) : null,
+        bestMove: i < moves.length - 1 ? (findBestMove(temp) ?? '') : '',  // camelCase
       });
     }
 
@@ -576,7 +583,7 @@ async function queueAnalysis(gameId, pgn) {
     if (error) {
       console.error('[analysis] DB write failed:', error.message);
     } else {
-      console.log(`[analysis] ✓ Game ${gameId}: ${evalPoints.length} positions evaluated`);
+      console.log(`[analysis] ✓ Game ${gameId}: ${evalPoints.length} positions stored (fallback PST evaluator; Stockfish will overwrite via review page)`);
     }
   } catch (e) {
     console.error('[analysis] Error:', e?.message ?? e);

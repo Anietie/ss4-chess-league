@@ -130,6 +130,16 @@ export default function GameRoomPage() {
   const [moveFrom, setMoveFrom] = useState<any>(null);
   const [optionSquares, setOptionSquares] = useState({});
 
+  // CONFIRM MOVE STATE — chess.com-style: preview move on board, confirm before sending
+  const [confirmMove, setConfirmMove] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    return localStorage.getItem('confirmMove') === 'true';
+  });
+  // pendingMove: a move the player has dragged/clicked but not yet confirmed
+  const [pendingMove, setPendingMove] = useState<{ from: string; to: string; promotion: string } | null>(null);
+  // pendingFen: board position AFTER the pending move (for display only, not sent to server yet)
+  const [pendingFen, setPendingFen] = useState<string | null>(null);
+
   const socketRef = useRef<Socket | null>(null);
   const myColorRef = useRef<"white" | "black" | null>(null);
   const [white, setWhite] = useState({
@@ -379,14 +389,32 @@ export default function GameRoomPage() {
     return true;
   }
 
+  // Helper: try a move locally (without sending to server) to get pendingFen
+  function tryMoveLocally(from: string, to: string, promotion = 'q'): string | null {
+    const tempChess = new Chess(chess.fen());
+    try {
+      const result = tempChess.move({ from, to, promotion });
+      return result ? tempChess.fen() : null;
+    } catch { return null; }
+  }
+
+  function emitMove(from: string, to: string, promotion = 'q') {
+    const sock = socketRef.current;
+    const myPlayerId = myPlayerIdRef.current;
+    sock?.emit('make_move', { game_id: gameId, player_id: myPlayerId, move: { from, to, promotion } });
+  }
+
   // TAP-TO-MOVE HANDLER
   function onSquareClick(square: any) {
     const myPlayerId = myPlayerIdRef.current;
-    if (status !== "active" || !myPlayerId) return;
+    if (status !== 'active' || !myPlayerId) return;
     const isMyTurn =
-      (chess.turn() === "w" && myColorRef.current === "white") ||
-      (chess.turn() === "b" && myColorRef.current === "black");
+      (chess.turn() === 'w' && myColorRef.current === 'white') ||
+      (chess.turn() === 'b' && myColorRef.current === 'black');
     if (!isMyTurn) return;
+
+    // If there's a pending move, clicking elsewhere cancels it
+    if (pendingMove) { setPendingMove(null); setPendingFen(null); setMoveFrom(null); return; }
 
     if (!moveFrom) {
       const hasOptions = getMoveOptions(square);
@@ -394,13 +422,15 @@ export default function GameRoomPage() {
       return;
     }
 
-    // Try to make move
-    const sock = socketRef.current;
-    sock?.emit("make_move", {
-      game_id: gameId,
-      player_id: myPlayerId,
-      move: { from: moveFrom, to: square, promotion: "q" },
-    });
+    const newFen = tryMoveLocally(moveFrom, square);
+    if (!newFen) { setMoveFrom(null); setOptionSquares({}); return; }
+
+    if (confirmMove) {
+      setPendingMove({ from: moveFrom, to: square, promotion: 'q' });
+      setPendingFen(newFen);
+    } else {
+      emitMove(moveFrom, square);
+    }
     setMoveFrom(null);
     setOptionSquares({});
   }
@@ -409,19 +439,24 @@ export default function GameRoomPage() {
     (src: string, tgt: string) => {
       const myPlayerId = myPlayerIdRef.current;
       const sock = socketRef.current;
-      if (status !== "active" || !sock) return false;
+      if (status !== 'active' || !sock) return false;
       const isMyTurn =
-        (chess.turn() === "w" && myColorRef.current === "white") ||
-        (chess.turn() === "b" && myColorRef.current === "black");
+        (chess.turn() === 'w' && myColorRef.current === 'white') ||
+        (chess.turn() === 'b' && myColorRef.current === 'black');
       if (!isMyTurn) return false;
-      sock.emit("make_move", {
-        game_id: gameId,
-        player_id: myPlayerId,
-        move: { from: src, to: tgt, promotion: "q" },
-      });
+
+      const newFen = tryMoveLocally(src, tgt);
+      if (!newFen) return false;
+
+      if (confirmMove) {
+        setPendingMove({ from: src, to: tgt, promotion: 'q' });
+        setPendingFen(newFen);
+      } else {
+        emitMove(src, tgt);
+      }
       return true;
     },
-    [status, chess, gameId],
+    [status, chess, gameId, confirmMove],  // eslint-disable-line react-hooks/exhaustive-deps
   );
 
   if (status === "unauthorized")
@@ -474,6 +509,22 @@ export default function GameRoomPage() {
               <Eye size={12} /> {spectators} watching
             </a>
           )}
+          {/* Confirm move toggle — persisted to localStorage */}
+          {!isSpectator && (
+            <button
+              title={confirmMove ? 'Confirm move: ON (click to disable)' : 'Confirm move: OFF (click to enable)'}
+              onClick={() => {
+                const next = !confirmMove;
+                setConfirmMove(next);
+                localStorage.setItem('confirmMove', String(next));
+                // Cancel any pending move when toggling off
+                if (!next) { setPendingMove(null); setPendingFen(null); }
+              }}
+              className={`text-xs px-2 py-1 rounded border transition-colors ${confirmMove ? 'border-gold text-gold bg-gold/10' : 'border-ink-600 text-ink-400 hover:text-chalk'}`}
+            >
+              ✓ Confirm
+            </button>
+          )}
           <SoundToggle enabled={soundEnabled} onToggle={toggleSound} />
         </div>
       </div>
@@ -510,21 +561,43 @@ export default function GameRoomPage() {
           />
 
           {/* UPDATED: touch-none wrapper stops scrolling during piece movement */}
-          <div className="board-wrapper touch-none select-none">
+          <div className="board-wrapper touch-none select-none relative">
             {typeof window !== "undefined" && (
               <Chessboard
-                position={fen}
+                position={pendingFen ?? fen}
                 onPieceDrop={onDrop}
                 onSquareClick={onSquareClick}
                 customSquareStyles={optionSquares}
                 boardOrientation={orientation}
                 customDarkSquareStyle={{ backgroundColor: "#4a6080" }}
                 customLightSquareStyle={{ backgroundColor: "#b0bcce" }}
-                arePiecesDraggable={status === "active" && !isSpectator && !touchMode}
+                arePiecesDraggable={status === "active" && !isSpectator && !touchMode && !pendingMove}
                 animationDuration={150}
               />
             )}
           </div>
+
+          {/* Confirm move overlay — appears after dragging/clicking when confirmMove is on */}
+          {pendingMove && (
+            <div className="flex gap-2 justify-center">
+              <button
+                onClick={() => {
+                  emitMove(pendingMove.from, pendingMove.to, pendingMove.promotion);
+                  setPendingMove(null);
+                  setPendingFen(null);
+                }}
+                className="btn-gold flex-1 text-sm font-semibold gap-1.5"
+              >
+                ✓ Confirm Move
+              </button>
+              <button
+                onClick={() => { setPendingMove(null); setPendingFen(null); }}
+                className="btn-ghost flex-1 text-sm gap-1.5"
+              >
+                ✕ Cancel
+              </button>
+            </div>
+          )}
 
           <Clock
             {...(orientation === "white"
