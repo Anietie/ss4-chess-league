@@ -47,15 +47,13 @@ export default async function ProfilePage({
 
   const repertoire = repertoireData?.repertoire;
 
-  const wins =
-    recentGames?.filter(
-      (g: any) =>
-        (g.result === "1-0" && g.white_player?.id === id) ||
-        (g.result === "0-1" && g.black_player?.id === id),
-    ).length ?? 0;
-  const draws =
-    recentGames?.filter((g: any) => g.result === "0.5-0.5").length ?? 0;
+  const wins = recentGames?.filter((g: any) =>
+    (g.result === '1-0' && g.white_player?.id === id) ||
+    (g.result === '0-1' && g.black_player?.id === id),
+  ).length ?? 0;
+  const draws  = recentGames?.filter((g: any) => g.result === '0.5-0.5').length ?? 0;
   const losses = (recentGames?.length ?? 0) - wins - draws;
+  const totalGames = recentGames?.length ?? 0;
 
   return (
     <div className="max-w-4xl mx-auto px-4 py-10 space-y-8">
@@ -105,7 +103,7 @@ export default async function ProfilePage({
               RD: ±{Math.round(player.rating_deviation)}
             </div>
             <div className="text-xs text-ink-400">
-              {player.games_played} league games
+              {player.games_played} rated games played
             </div>
           </div>
         </div>
@@ -299,62 +297,61 @@ export default async function ProfilePage({
 
       {/* Recent Games */}
       <section>
-        <h2 className="font-display text-lg font-bold text-chalk mb-3">
-          Recent Games
-        </h2>
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="font-display text-lg font-bold text-chalk">
+            Recent Games
+          </h2>
+          <Link href={`/games/history?player=${id}`} className="text-xs text-ink-400 hover:text-gold transition-colors">
+            View all →
+          </Link>
+        </div>
         <div className="card divide-y divide-ink-700">
           {recentGames?.map((g: any) => {
             const isWhite = g.white_player?.id === id;
             const opp = isWhite ? g.black_player : g.white_player;
             const myResult =
-              g.result === "0.5-0.5"
-                ? "draw"
-                : (isWhite ? g.result === "1-0" : g.result === "0-1")
-                  ? "win"
-                  : "loss";
-            const colourMap = {
-              win: "text-green-400",
-              draw: "text-chalk-700",
-              loss: "text-red-400",
-            };
-            const ratingBefore = isWhite
-              ? g.white_rating_before
-              : g.black_rating_before;
-            const ratingAfter = isWhite
-              ? g.white_rating_after
-              : g.black_rating_after;
-            const change =
-              ratingAfter && ratingBefore
-                ? Math.round(ratingAfter - ratingBefore)
-                : null;
+              g.result === '0.5-0.5'
+                ? 'draw'
+                : (isWhite ? g.result === '1-0' : g.result === '0-1')
+                  ? 'win'
+                  : 'loss';
+            const colourMap = { win: 'text-green-400', draw: 'text-chalk-700', loss: 'text-red-400' };
+            const ratingBefore = isWhite ? g.white_rating_before : g.black_rating_before;
+            const ratingAfter  = isWhite ? g.white_rating_after  : g.black_rating_after;
+            const change = ratingAfter && ratingBefore ? Math.round(ratingAfter - ratingBefore) : null;
+            const isCasual = g.league === 'casual';
+            const leagueLabel = isCasual
+              ? (g.is_rated ? 'Casual Rated' : 'Casual Unrated')
+              : g.league?.replace(/_/g, ' ');
             return (
-              <Link
-                key={g.id}
-                href={`/game/${g.id}`}
-                className="flex items-center justify-between px-4 py-3 hover:bg-ink-700 transition-colors"
-              >
-                <div>
-                  <div className="text-sm text-chalk">vs {opp?.full_name}</div>
-                  <div className="text-xs text-ink-400 capitalize">
-                    {g.league?.replace("_", " ")} · {g.played_at?.slice(0, 10)}
+              <div key={g.id} className="flex items-center justify-between px-4 py-3 hover:bg-ink-700/50 transition-colors">
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm text-chalk">vs {opp?.full_name ?? 'Unknown'}</div>
+                  <div className="flex items-center gap-2 mt-0.5">
+                    <span className="text-xs text-ink-400 capitalize">{leagueLabel}</span>
+                    {g.played_at && <span className="text-xs text-ink-600">· {g.played_at.slice(0, 10)}</span>}
                   </div>
                 </div>
-                <div className="text-right">
-                  <span
-                    className={`text-sm font-bold capitalize ${colourMap[myResult as keyof typeof colourMap]}`}
+                <div className="flex items-center gap-3 flex-shrink-0">
+                  <div className="text-right">
+                    <span className={`text-sm font-bold capitalize ${colourMap[myResult as keyof typeof colourMap]}`}>
+                      {myResult}
+                    </span>
+                    {change !== null && (
+                      <div className={`text-xs ${change >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                        {change >= 0 ? '+' : ''}{change}
+                      </div>
+                    )}
+                  </div>
+                  <Link
+                    href={`/game/${g.id}/review`}
+                    className="text-xs text-ink-500 hover:text-gold transition-colors px-2 py-1 rounded border border-ink-700 hover:border-gold/40"
+                    title="Review game"
                   >
-                    {myResult}
-                  </span>
-                  {change !== null && (
-                    <div
-                      className={`text-xs ${change >= 0 ? "text-green-400" : "text-red-400"}`}
-                    >
-                      {change >= 0 ? "+" : ""}
-                      {change}
-                    </div>
-                  )}
+                    Review
+                  </Link>
                 </div>
-              </Link>
+              </div>
             );
           })}
           {!recentGames?.length && (

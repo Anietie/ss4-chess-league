@@ -9,6 +9,7 @@ const { Server } = require('socket.io');
 const { Chess } = require('chess.js');
 const cors = require('cors');
 const { createClient } = require('@supabase/supabase-js');
+const { analyseGameServerSide } = require('./stockfish-analysis');
 require('dotenv').config({ path: '.env.local' });
 
 const app = express();
@@ -89,7 +90,7 @@ function createGameState(game) {
     last_move_ts: null,
     status: 'waiting',   // waiting | active | ended
     result: null,
-    is_rated: game.is_rated ?? false,
+    is_rated: game.is_rated ?? true,   // default TRUE — only explicit false skips ratings
     competition_phase: game.competition_phase ?? null,  // for anticheat skip logic
     connected: new Set(),
     spectators: new Set(),
@@ -387,7 +388,19 @@ async function endGame(gameId, result, pgn) {
     fen: state.chess.fen(),
     competition_phase: state.competition_phase ?? null,
   });
-  queueAnalysis(gameId, finalPgn);
+
+  // ── Fire-and-forget server-side anti-cheat analysis ───────────────────────
+  // Only run for scorable, non-calibration, rated or competitive games.
+  // We DON'T await this — it takes 3–5 mins and must not block endGame.
+  const scorableResult = ['1-0', '0-1', '0.5-0.5'].includes(result);
+  if (scorableResult && state.competition_phase !== 'calibration' && finalPgn) {
+    runAnticheatPipeline(
+      gameId, finalPgn,
+      state.white_name, state.black_name,
+      state.white_player_id, state.black_player_id,
+      state.competition_phase,
+    ).catch(err => console.error('[anticheat] Unhandled pipeline error:', err?.message));
+  }
 
   // ── STEP 1: Persist result + PGN directly to DB ───────────────────────────
   // Must happen before the ratings API call so game data is always saved
@@ -555,46 +568,158 @@ function findBestMove(chess) {
   return best ? best.from + best.to : null;
 }
 
-async function queueAnalysis(gameId, pgn) {
+// ── Server-side anti-cheat analysis pipeline ─────────────────────────────────
+//
+// Called fire-and-forget after every rated, non-calibration game ends.
+// Runs real Stockfish (movetime 1500ms, MultiPV 3) server-side — players have
+// no involvement and cannot manipulate results.
+//
+// Flow:
+//   1. Analyse all positions with real Stockfish
+//   2. Save analysis_json to games table
+//   3. Compute engine correlation scores for both players
+//   4. If flagged: write conduct_violations, notify both players
+//   5. Admin confirms/dismisses via POST /api/admin/resolve-cheat
+
+const { computeCorrelationScore } = (() => {
+  // Inline the correlation scorer so the server doesn't import TS files
+  const THRESHOLD = 75;
+  function computeCorrelationScore(actualMoves, analysisJson, playingSide, player_id, game_id) {
+    const byPly = new Map(analysisJson.map(a => [a.ply, a]));
+    const playerEntries = analysisJson.filter(a => {
+      if (a.ply === 0) return false;
+      const isWhiteMove = a.ply % 2 === 1;
+      return playingSide === 'white' ? isWhiteMove : !isWhiteMove;
+    });
+    if (!playerEntries.length) {
+      return { player_id, game_id, move_count: 0, top1_matches: 0, top3_matches: 0,
+               avg_centipawn_loss: 0, correlation_score: 0, flag: false, verdict: 'insufficient_data' };
+    }
+    let top1 = 0, top3 = 0, totalCPL = 0, cplCount = 0;
+    for (const entry of playerEntries) {
+      const actualMove = actualMoves[entry.ply - 1];
+      if (!actualMove) continue;
+      if (actualMove === entry.bestMove) top1++;
+      if (entry.top3?.includes(actualMove)) top3++;
+      const before = byPly.get(entry.ply - 1);
+      if (before !== undefined) {
+        const rawCPL = playingSide === 'white'
+          ? before.score - entry.score
+          : entry.score - before.score;
+        totalCPL += Math.max(0, Math.min(rawCPL, 500));
+        cplCount++;
+      }
+    }
+    const n        = playerEntries.length;
+    const top1Pct  = (top1 / n) * 100;
+    const top3Pct  = (top3 / n) * 100;
+    const avgCPL   = cplCount > 0 ? totalCPL / cplCount : 999;
+    const cplScore = Math.max(0, 100 - avgCPL / 3);
+    const correlation_score = Math.round(top1Pct * 0.5 + top3Pct * 0.25 + cplScore * 0.25);
+    const flag = correlation_score >= THRESHOLD && n >= 10;
+    let verdict = 'clean';
+    if (n < 10)    verdict = 'insufficient_moves';
+    else if (flag) verdict = correlation_score >= 90 ? 'strong_suspicion' : 'elevated_correlation';
+    return { player_id, game_id, move_count: n, top1_matches: top1, top3_matches: top3,
+             avg_centipawn_loss: Math.round(avgCPL), correlation_score, flag, verdict };
+  }
+  return { computeCorrelationScore };
+})();
+
+async function runAnticheatPipeline(gameId, pgn, whiteName, blackName, whitePlayerId, blackPlayerId, competitionPhase) {
+  // Never analyse calibration games — players are supposed to match the engine
+  if (competitionPhase === 'calibration') {
+    console.log(`[anticheat] Skipping calibration game ${gameId}`);
+    return;
+  }
+
+  console.log(`[anticheat] Starting server-side Stockfish analysis for game ${gameId} (${whiteName} vs ${blackName})`);
+
   try {
+    // ── Step 1: Analyse with real Stockfish ──────────────────────────────────
+    const analysisJson = await analyseGameServerSide(pgn);
+    if (!analysisJson.length) {
+      console.warn(`[anticheat] Empty analysis for game ${gameId} — skipping`);
+      return;
+    }
+
+    // ── Step 2: Save analysis to DB ──────────────────────────────────────────
+    const { error: saveErr } = await supabase.from('games')
+      .update({ analysis_json: analysisJson, analysis_complete: true })
+      .eq('id', gameId);
+    if (saveErr) console.error(`[anticheat] Failed to save analysis_json:`, saveErr.message);
+
+    // ── Step 3: Compute correlation scores ───────────────────────────────────
     const chess = new Chess();
     chess.loadPgn(pgn);
-    const moves = chess.history();
-    if (!moves.length) return;
+    const uciMoves = chess.history({ verbose: true })
+      .map(m => m.from + m.to + (m.promotion ?? ''));
 
-    const evalPoints = [];
-    const temp = new Chess();
+    const whiteResult = computeCorrelationScore(uciMoves, analysisJson, 'white', whitePlayerId, gameId);
+    const blackResult = computeCorrelationScore(uciMoves, analysisJson, 'black', blackPlayerId, gameId);
 
-    // Evaluate starting position (ply 0)
-    evalPoints.push({
-      ply: 0,
-      score: evalPosition(temp),
-      bestMove: findBestMove(temp) ?? '',  // camelCase — matches anticheat API + review page
-    });
+    console.log(`[anticheat] ${whiteName} (white): score=${whiteResult.correlation_score} verdict=${whiteResult.verdict}`);
+    console.log(`[anticheat] ${blackName} (black): score=${blackResult.correlation_score} verdict=${blackResult.verdict}`);
 
-    // Evaluate after each move
-    for (let i = 0; i < moves.length; i++) {
-      temp.move(moves[i]);
-      evalPoints.push({
-        ply: i + 1,
-        score: evalPosition(temp),
-        bestMove: i < moves.length - 1 ? (findBestMove(temp) ?? '') : '',  // camelCase
+    // ── Step 4: Save scores ──────────────────────────────────────────────────
+    await supabase.from('games').update({
+      white_anticheat_score: whiteResult.correlation_score,
+      black_anticheat_score: blackResult.correlation_score,
+      anticheat_flagged:     whiteResult.flag || blackResult.flag,
+    }).eq('id', gameId);
+
+    // ── Step 5: Flag handling ────────────────────────────────────────────────
+    const flaggedPlayers = [
+      whiteResult.flag ? { result: whiteResult, name: whiteName, opponentId: blackPlayerId, opponentName: blackName, side: 'white' } : null,
+      blackResult.flag ? { result: blackResult, name: blackName, opponentId: whitePlayerId, opponentName: whiteName, side: 'black' } : null,
+    ].filter(Boolean);
+
+    for (const fp of flaggedPlayers) {
+      const isStrong = fp.result.verdict === 'strong_suspicion';
+      const scoreLabel = `${fp.result.correlation_score}/100`;
+      const topLabel   = `${fp.result.top1_matches}/${fp.result.move_count} engine top-1 matches`;
+
+      // Write conduct_violations record
+      await supabase.from('conduct_violations').insert({
+        player_id:      fp.result.player_id,
+        violation_type: 'cheating_flag',
+        severity:       isStrong ? 'game_forfeit' : 'warning',
+        description:    `Engine correlation score ${scoreLabel} (${topLabel}, avg CPL ${fp.result.avg_centipawn_loss}). Verdict: ${fp.result.verdict}. Pending manual review.`,
+        game_id:        gameId,
       });
+
+      // Notify the flagged player
+      await supabase.from('notifications').insert({
+        player_id: fp.result.player_id,
+        type:      'admin_action',
+        title:     isStrong ? '⚠️ Game Under Serious Review' : '🔍 Game Flagged for Review',
+        message:   isStrong
+          ? `Your game against ${fp.opponentName} has been flagged with a high engine-correlation score (${scoreLabel}). The game result has been placed under review. A League Officer will investigate and you will be notified of the outcome.`
+          : `Your game against ${fp.opponentName} has been flagged for routine review (score ${scoreLabel}). No action has been taken. A League Officer will review and notify you.`,
+        game_id: gameId,
+      });
+
+      // Notify the opponent — they deserve to know their result may be in question
+      await supabase.from('notifications').insert({
+        player_id: fp.opponentId,
+        type:      'admin_action',
+        title:     '🔍 Opponent Game Under Review',
+        message:   `Your game against ${fp.name} is under review for a potential conduct issue. Your result is ${isStrong ? 'temporarily held pending a League Officer decision' : 'unaffected unless the review finds a confirmed violation'}. You will be notified of the outcome.`,
+        game_id: gameId,
+      });
+
+      console.log(`[anticheat] ⚑ Flagged ${fp.name} (${fp.result.verdict}) — conduct_violation created, both players notified`);
     }
 
-    const { error } = await supabase.from('games')
-      .update({ analysis_json: evalPoints })
-      .eq('id', gameId);
-
-    if (error) {
-      console.error('[analysis] DB write failed:', error.message);
-    } else {
-      console.log(`[analysis] ✓ Game ${gameId}: ${evalPoints.length} positions stored (fallback PST evaluator; Stockfish will overwrite via review page)`);
+    if (!flaggedPlayers.length) {
+      console.log(`[anticheat] ✓ Both players clean for game ${gameId}`);
     }
-  } catch (e) {
-    console.error('[analysis] Error:', e?.message ?? e);
+
+  } catch (err) {
+    console.error(`[anticheat] Pipeline error for game ${gameId}:`, err?.message ?? err);
   }
 }
+
 
 // ── Internal: called by /api/casual/[id] when a challenge is accepted ───────
 app.post('/notify-challenge-accepted', (req, res) => {

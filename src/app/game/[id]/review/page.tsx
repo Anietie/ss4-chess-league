@@ -224,7 +224,8 @@ export default function GameReviewPage() {
       for (let i = 0; i < fens.length; i++) {
         // Depth 22: highest practical depth — chess.com uses 18-22 for cloud analysis.
         // MultiPV 3 captures top-3 candidates for anti-cheat correlation scoring.
-        const r = await sf.evaluateMultiPV(fens[i], 22, 3);
+        // 800ms per position: 100 positions ≈ 80 seconds. Previously depth 22 = 60+ min.
+        const r = await sf.evaluateMultiPV(fens[i], 800, 3);
         // Score is always from white's perspective
         const score = i % 2 === 0 ? r.score : -r.score;
         results.push({ ply: i, score, best_move: r.bestMove });
@@ -360,10 +361,23 @@ export default function GameReviewPage() {
     load();
   }, [id, processGame, runStockfishAnalysis]);
 
-  // Scroll move list to keep current move visible
+  // Scroll move list to keep current move visible — WITHOUT scrolling the page.
+  // scrollIntoView() on the element scrolls the entire document on mobile.
+  // Instead we manually adjust the container's scrollTop.
   useEffect(() => {
-    const el = moveListRef.current?.querySelector(`[data-ply="${curIdx}"]`);
-    el?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    const container = moveListRef.current;
+    if (!container) return;
+    const el = container.querySelector<HTMLElement>(`[data-ply="${curIdx}"]`);
+    if (!el) return;
+    const elTop    = el.offsetTop;
+    const elBottom = elTop + el.offsetHeight;
+    const ctTop    = container.scrollTop;
+    const ctBottom = ctTop + container.clientHeight;
+    if (elTop < ctTop) {
+      container.scrollTop = elTop - 8;
+    } else if (elBottom > ctBottom) {
+      container.scrollTop = elBottom - container.clientHeight + 8;
+    }
   }, [curIdx]);
 
   // Show best-move arrow when analysis is ready
@@ -485,7 +499,7 @@ export default function GameReviewPage() {
         <div className="mb-4 px-4 py-3 rounded-lg bg-ink-800 border border-ink-700 text-sm text-ink-300 space-y-2">
           <div className="flex items-center gap-2.5">
             <Loader2 size={14} className="animate-spin text-gold flex-shrink-0" />
-            <span>Stockfish depth-22 analysis running… {sfProgress}% ({Math.round(sfProgress * sfTotal / 100)}/{sfTotal} positions)</span>
+            <span>Analysing game… {sfProgress}% ({Math.round(sfProgress * sfTotal / 100)}/{sfTotal} positions · ~{Math.round((sfTotal - Math.round(sfProgress * sfTotal / 100)) * 0.8 / 60)} min left)</span>
           </div>
           <div className="h-1 rounded-full bg-ink-700 overflow-hidden">
             <div
@@ -516,7 +530,7 @@ export default function GameReviewPage() {
             </div>
 
             {/* Board */}
-            <div className="flex-1 board-wrapper">
+            <div className="flex-1 board-wrapper touch-none select-none">
               <Chessboard
                 position={currentFen}
                 boardOrientation={orientation}
@@ -547,15 +561,35 @@ export default function GameReviewPage() {
             </div>
           )}
 
-          {/* Nav controls */}
-          <div className="flex items-center justify-center gap-1.5">
-            <button onClick={() => setCurIdx(0)} disabled={curIdx === 0} className="btn-ghost p-2 disabled:opacity-30"><ChevronsLeft size={15} /></button>
-            <button onClick={() => setCurIdx(p => Math.max(0, p - 1))} disabled={curIdx === 0} className="btn-ghost p-2 disabled:opacity-30"><ChevronLeft size={15} /></button>
+          {/* Nav controls — touch-action:none prevents mobile page scroll on tap */}
+          <div className="flex items-center justify-center gap-1.5 touch-none select-none">
+            <button
+              onPointerDown={e => { e.preventDefault(); setCurIdx(0); }}
+              onClick={() => setCurIdx(0)}
+              disabled={curIdx === 0}
+              className="btn-ghost p-2 disabled:opacity-30"
+            ><ChevronsLeft size={15} /></button>
+            <button
+              onPointerDown={e => { e.preventDefault(); setCurIdx(p => Math.max(0, p - 1)); }}
+              onClick={() => setCurIdx(p => Math.max(0, p - 1))}
+              disabled={curIdx === 0}
+              className="btn-ghost p-2 disabled:opacity-30"
+            ><ChevronLeft size={15} /></button>
             <span className="text-xs text-ink-500 w-20 text-center tabular-nums">
               {curIdx > 0 ? `Move ${Math.ceil(curIdx / 2)} (${curIdx % 2 === 1 ? 'White' : 'Black'})` : 'Start'}
             </span>
-            <button onClick={() => setCurIdx(p => Math.min(positions.length - 1, p + 1))} disabled={curIdx >= positions.length - 1} className="btn-ghost p-2 disabled:opacity-30"><ChevronRight size={15} /></button>
-            <button onClick={() => setCurIdx(positions.length - 1)} disabled={curIdx >= positions.length - 1} className="btn-ghost p-2 disabled:opacity-30"><ChevronsRight size={15} /></button>
+            <button
+              onPointerDown={e => { e.preventDefault(); setCurIdx(p => Math.min(positions.length - 1, p + 1)); }}
+              onClick={() => setCurIdx(p => Math.min(positions.length - 1, p + 1))}
+              disabled={curIdx >= positions.length - 1}
+              className="btn-ghost p-2 disabled:opacity-30"
+            ><ChevronRight size={15} /></button>
+            <button
+              onPointerDown={e => { e.preventDefault(); setCurIdx(positions.length - 1); }}
+              onClick={() => setCurIdx(positions.length - 1)}
+              disabled={curIdx >= positions.length - 1}
+              className="btn-ghost p-2 disabled:opacity-30"
+            ><ChevronsRight size={15} /></button>
           </div>
           <p className="text-center text-[11px] text-ink-600">← → arrow keys · ↑↓ jump to start/end · Click graph to seek</p>
 

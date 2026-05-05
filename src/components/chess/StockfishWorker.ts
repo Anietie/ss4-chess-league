@@ -60,7 +60,9 @@ export class StockfishWorker {
   private send(cmd: string) { this.worker?.postMessage(cmd); }
 
   // ── Single-best-move evaluation (MultiPV 1) ──────────────────────────────
-  evaluate(fen: string, depth = 20): Promise<EvalResult> {
+  // Uses movetime (ms) not depth — predictable timing, still very strong.
+  // 800ms → ~depth 18 on typical hardware. Good enough for review display.
+  evaluate(fen: string, moveTimeMs = 800): Promise<EvalResult> {
     return new Promise((resolve) => {
       let latestScore = 0, latestMate: number | null = null, latestDepth = 0;
 
@@ -83,52 +85,43 @@ export class StockfishWorker {
 
       this.send('setoption name MultiPV value 1');
       this.send(`position fen ${fen}`);
-      this.send(`go depth ${depth}`);
+      this.send(`go movetime ${moveTimeMs}`);
     });
   }
 
   // ── Multi-PV evaluation — captures top-3 candidate moves ─────────────────
   //
   // Stockfish emits one "info … multipv N … pv <move> …" line per candidate
-  // at each depth. We collect the first move of each PV at the deepest level
-  // and return them as top3.
-  evaluateMultiPV(fen: string, depth = 20, multiPV = 3): Promise<MultiPVResult> {
+  // ── Multi-PV evaluation — captures top-3 candidate moves ─────────────────
+  // Uses movetime (ms) — NOT depth. Depth-based search is the reason review
+  // took 1 minute per ply. movetime 800ms gives ~depth 18 on typical hardware
+  // which is strong enough for review display and far faster.
+  evaluateMultiPV(fen: string, moveTimeMs = 800, multiPV = 3): Promise<MultiPVResult> {
     return new Promise((resolve) => {
-      // topMoves[1], [2], [3] hold the latest first-move for each PV line
       const topMoves: Record<number, string> = {};
       let latestScore = 0, latestMate: number | null = null, latestDepth = 0;
 
       const id = `eval-mpv-${Date.now()}-${Math.random()}`;
       this.listeners.set(id, (line: string) => {
         if (line.startsWith('info depth')) {
-          const depthMatch  = line.match(/depth (\d+)/);
+          const depthMatch   = line.match(/depth (\d+)/);
           const multipvMatch = line.match(/multipv (\d+)/);
-          // The pv field lists moves space-separated; the first one is the candidate
-          const pvMatch     = line.match(/ pv ([a-h][1-8][a-h][1-8][qrbn]?)/);
-          const scoreMatch  = line.match(/score cp (-?\d+)/);
-          const mateMatch   = line.match(/score mate (-?\d+)/);
+          const pvMatch      = line.match(/ pv ([a-h][1-8][a-h][1-8][qrbn]?)/);
+          const scoreMatch   = line.match(/score cp (-?\d+)/);
+          const mateMatch    = line.match(/score mate (-?\d+)/);
 
           if (depthMatch) latestDepth = parseInt(depthMatch[1]);
-
-          if (multipvMatch && pvMatch) {
-            const mpv = parseInt(multipvMatch[1]);
-            topMoves[mpv] = pvMatch[1];
-          }
-
-          // Score from multipv 1 only (that's the principal variation)
+          if (multipvMatch && pvMatch) topMoves[parseInt(multipvMatch[1])] = pvMatch[1];
           if (!multipvMatch || multipvMatch[1] === '1') {
             if (scoreMatch) { latestScore = parseInt(scoreMatch[1]); latestMate = null; }
             if (mateMatch)  { latestMate  = parseInt(mateMatch[1]);  latestScore = latestMate > 0 ? 30000 : -30000; }
           }
         }
-
         if (line.startsWith('bestmove')) {
           this.listeners.delete(id);
           const fallback = line.split(' ')[1] ?? '';
           const bestMove = topMoves[1] ?? fallback;
-          const top3 = ([topMoves[1], topMoves[2], topMoves[3]]
-            .filter(Boolean) as string[]);
-          // Always include at least bestMove
+          const top3 = ([topMoves[1], topMoves[2], topMoves[3]].filter(Boolean) as string[]);
           if (!top3.includes(bestMove) && bestMove) top3.unshift(bestMove);
           resolve({ score: latestScore, mate: latestMate, bestMove, top3, depth: latestDepth });
         }
@@ -136,34 +129,23 @@ export class StockfishWorker {
 
       this.send(`setoption name MultiPV value ${multiPV}`);
       this.send(`position fen ${fen}`);
-      this.send(`go depth ${depth}`);
+      this.send(`go movetime ${moveTimeMs}`);   // movetime NOT depth
     });
   }
 
-  // ── Full-game analysis — used by the anti-cheat pipeline ─────────────────
-  //
-  // Returns one entry per FEN (ply 0 = starting position, ply 1 = after move 1…).
-  // Score is ALWAYS from White's perspective (positive = white winning).
-  // We derive the sign from the FEN's active colour field — not from ply parity —
-  // so the orientation is correct even after captures that don't change ply parity.
-  //
-  // depth 22 gives strong accuracy; chess.com uses 18–22 for cloud analysis.
-  async analyseGame(fens: string[], depth = 22): Promise<AnalysisEntry[]> {
+  // ── Full-game analysis for the review page ────────────────────────────────
+  // Server handles anti-cheat independently. This method is only for review UX.
+  // moveTimeMs 800ms × ~100 positions = ~80 seconds for a 40-move game.
+  // Compare to depth 22: potentially 60+ minutes. movetime is the correct approach.
+  async analyseGame(fens: string[], moveTimeMs = 800): Promise<AnalysisEntry[]> {
     const results: AnalysisEntry[] = [];
-
     for (let i = 0; i < fens.length; i++) {
-      const r = await this.evaluateMultiPV(fens[i], depth, 3);
-      // Determine whose turn it is from the FEN string ('w' or 'b' is field 2)
-      const sideToMove = fens[i].split(' ')[1];
-      // Stockfish reports score from the perspective of the side to move.
-      // Convert to White's perspective:
-      const score = sideToMove === 'w' ? r.score : -r.score;
+      const r = await this.evaluateMultiPV(fens[i], moveTimeMs, 3);
+      const sideToMove = fens[i].split(' ')[1];   // 'w' or 'b' from FEN
+      const score = sideToMove === 'w' ? r.score : -r.score;  // always White's perspective
       results.push({ ply: i, score, bestMove: r.bestMove, top3: r.top3 });
     }
-
-    // Reset MultiPV to 1 so the worker can be reused for single-move eval
     this.send('setoption name MultiPV value 1');
-
     return results;
   }
 

@@ -328,19 +328,12 @@ export default function GameRoomPage() {
       sock.on("game_ended", async (d) => {
         setStatus("ended");
         setResult(d.result);
-        let finalPositions: string[] = [];
-        let finalPgnStr = '';
         if (d.pgn) {
           setFinalPgn(d.pgn);
-          finalPgnStr = d.pgn;
           try {
             chess.loadPgn(d.pgn);
             setFen(chess.fen());
             setMoves(chess.history());
-            // Capture all FENs for Stockfish analysis
-            const tempC = new Chess();
-            finalPositions = [tempC.fen()];
-            for (const mv of chess.history()) { tempC.move(mv); finalPositions.push(tempC.fen()); }
           } catch {}
         }
         setWhite((p) => ({ ...p, isActive: false }));
@@ -351,34 +344,8 @@ export default function GameRoomPage() {
           else if (d.result === "0.5-0.5") playRef.current("draw");
           else playRef.current("loss");
         }
-
-        // ── Post-game Stockfish analysis + anti-cheat ──────────────────────
-        // Runs for ALL finished games (casual rated/unrated, league, etc.)
-        // except calibration. Only one player needs to submit — both will try
-        // but the API is idempotent (last write wins, harmless).
-        // Skip results that can't be scored (forfeit etc.)
-        const scorableResults = ['1-0', '0-1', '0.5-0.5'];
-        if (
-          finalPositions.length > 1 &&
-          scorableResults.includes(d.result) &&
-          d.competition_phase !== 'calibration'
-        ) {
-          try {
-            const { StockfishWorker } = await import('@/components/chess/StockfishWorker');
-            const sf = new StockfishWorker();
-            await sf.init();
-            const analysis = await sf.analyseGame(finalPositions, 22);
-            sf.terminate();
-
-            await fetch(`/api/games/${gameId}/anticheat`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ analysis_json: analysis }),
-            }).catch(err => console.warn('[anticheat] submit failed:', err?.message));
-          } catch (sfErr: any) {
-            console.warn('[anticheat] Stockfish analysis failed (non-fatal):', sfErr?.message);
-          }
-        }
+        // Anti-cheat analysis runs server-side (fire-and-forget in socket-server.js).
+        // No client-side Stockfish needed here — results appear in DB when ready.
       });
       sock.on("draw_offered", ({ by_player_id }) => {
         if (by_player_id !== myPlayerIdRef.current) setDrawOffered(true);

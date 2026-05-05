@@ -110,16 +110,14 @@ export async function POST(req: NextRequest) {
   console.log(`[ratings/update] ✓ ${white.id}: ${Math.round(white.ss4_rating)} → ${Math.round(updates.white.newRating)} (${updates.white.ratingChange >= 0 ? '+' : ''}${Math.round(updates.white.ratingChange)})`);
   console.log(`[ratings/update] ✓ ${black.id}: ${Math.round(black.ss4_rating)} → ${Math.round(updates.black.newRating)} (${updates.black.ratingChange >= 0 ? '+' : ''}${Math.round(updates.black.ratingChange)})`);
 
-  // ── rating_history (optional — null season is allowed for casual games) ───────
-  if (game.season != null) {
-    try {
-      await supabase.from('rating_history').insert([
-        { player_id: white.id, game_id, season: game.season, rating: updates.white.newRating, rating_deviation: updates.white.newRD, volatility: updates.white.newVolatility, change: updates.white.ratingChange, recorded_at: now },
-        { player_id: black.id, game_id, season: game.season, rating: updates.black.newRating, rating_deviation: updates.black.newRD, volatility: updates.black.newVolatility, change: updates.black.ratingChange, recorded_at: now },
-      ]);
-    } catch (rhErr: any) {
-      console.error('[ratings/update] rating_history insert failed (non-fatal):', rhErr?.message);
-    }
+  // ── rating_history — insert for all rated games including casual (season may be null) ──
+  try {
+    await supabase.from('rating_history').insert([
+      { player_id: white.id, game_id, season: game.season ?? null, rating: updates.white.newRating, rating_deviation: updates.white.newRD, volatility: updates.white.newVolatility, change: updates.white.ratingChange, recorded_at: now },
+      { player_id: black.id, game_id, season: game.season ?? null, rating: updates.black.newRating, rating_deviation: updates.black.newRD, volatility: updates.black.newVolatility, change: updates.black.ratingChange, recorded_at: now },
+    ]);
+  } catch (rhErr: any) {
+    console.error('[ratings/update] rating_history insert failed (non-fatal):', rhErr?.message);
   }
 
   // ── Standings (competitive leagues only) ─────────────────────────────────────
