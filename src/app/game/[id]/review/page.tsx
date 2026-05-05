@@ -225,7 +225,7 @@ export default function GameReviewPage() {
         // Depth 22: highest practical depth — chess.com uses 18-22 for cloud analysis.
         // MultiPV 3 captures top-3 candidates for anti-cheat correlation scoring.
         // 800ms per position: 100 positions ≈ 80 seconds. Previously depth 22 = 60+ min.
-        const r = await sf.evaluateMultiPV(fens[i], 800, 3);
+        const r = await sf.evaluateMultiPV(fens[i], 3000, 3);
         // Score is always from white's perspective
         const score = i % 2 === 0 ? r.score : -r.score;
         results.push({ ply: i, score, best_move: r.bestMove });
