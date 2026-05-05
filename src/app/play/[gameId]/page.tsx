@@ -129,6 +129,8 @@ export default function GameRoomPage() {
   // TAP-TO-MOVE STATE
   const [moveFrom, setMoveFrom] = useState<any>(null);
   const [optionSquares, setOptionSquares] = useState({});
+  // Last move highlighting — shown on board so players can spot opponent's move
+  const [lastMoveSquares, setLastMoveSquares] = useState<Record<string, React.CSSProperties>>({});
 
   // CONFIRM MOVE STATE — chess.com-style: preview move on board, confirm before sending
   const [confirmMove, setConfirmMove] = useState<boolean>(() => {
@@ -311,15 +313,35 @@ export default function GameRoomPage() {
         setMoves(chess.history());
         setWhite((p) => ({ ...p, timeMs: d.white_time, isActive: d.current_turn === "w" }));
         setBlack((p) => ({ ...p, timeMs: d.black_time, isActive: d.current_turn === "b" }));
+        // Highlight the from/to squares of the last move
+        if (lastMove) {
+          setLastMoveSquares({
+            [lastMove.from]: { backgroundColor: 'rgba(255, 255, 0, 0.25)' },
+            [lastMove.to]:   { backgroundColor: 'rgba(255, 255, 0, 0.35)' },
+          });
+        }
+        // Clear any pending confirm-move state when a move_made arrives
+        setPendingMove(null);
+        setPendingFen(null);
       });
 
-      sock.on("game_ended", (d) => {
+      sock.on("game_ended", async (d) => {
         setStatus("ended");
         setResult(d.result);
+        let finalPositions: string[] = [];
+        let finalPgnStr = '';
         if (d.pgn) {
           setFinalPgn(d.pgn);
-          // Load final position so board shows the last move
-          try { chess.loadPgn(d.pgn); setFen(chess.fen()); setMoves(chess.history()); } catch {}
+          finalPgnStr = d.pgn;
+          try {
+            chess.loadPgn(d.pgn);
+            setFen(chess.fen());
+            setMoves(chess.history());
+            // Capture all FENs for Stockfish analysis
+            const tempC = new Chess();
+            finalPositions = [tempC.fen()];
+            for (const mv of chess.history()) { tempC.move(mv); finalPositions.push(tempC.fen()); }
+          } catch {}
         }
         setWhite((p) => ({ ...p, isActive: false }));
         setBlack((p) => ({ ...p, isActive: false }));
@@ -328,6 +350,34 @@ export default function GameRoomPage() {
           if (iWon) playRef.current("win");
           else if (d.result === "0.5-0.5") playRef.current("draw");
           else playRef.current("loss");
+        }
+
+        // ── Post-game Stockfish analysis + anti-cheat ──────────────────────
+        // Runs for ALL finished games (casual rated/unrated, league, etc.)
+        // except calibration. Only one player needs to submit — both will try
+        // but the API is idempotent (last write wins, harmless).
+        // Skip results that can't be scored (forfeit etc.)
+        const scorableResults = ['1-0', '0-1', '0.5-0.5'];
+        if (
+          finalPositions.length > 1 &&
+          scorableResults.includes(d.result) &&
+          d.competition_phase !== 'calibration'
+        ) {
+          try {
+            const { StockfishWorker } = await import('@/components/chess/StockfishWorker');
+            const sf = new StockfishWorker();
+            await sf.init();
+            const analysis = await sf.analyseGame(finalPositions, 22);
+            sf.terminate();
+
+            await fetch(`/api/games/${gameId}/anticheat`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ analysis_json: analysis }),
+            }).catch(err => console.warn('[anticheat] submit failed:', err?.message));
+          } catch (sfErr: any) {
+            console.warn('[anticheat] Stockfish analysis failed (non-fatal):', sfErr?.message);
+          }
         }
       });
       sock.on("draw_offered", ({ by_player_id }) => {
@@ -567,7 +617,7 @@ export default function GameRoomPage() {
                 position={pendingFen ?? fen}
                 onPieceDrop={onDrop}
                 onSquareClick={onSquareClick}
-                customSquareStyles={optionSquares}
+                customSquareStyles={{ ...lastMoveSquares, ...optionSquares }}
                 boardOrientation={orientation}
                 customDarkSquareStyle={{ backgroundColor: "#4a6080" }}
                 customLightSquareStyle={{ backgroundColor: "#b0bcce" }}

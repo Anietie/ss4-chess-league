@@ -3,8 +3,8 @@ import { supabase } from "@/lib/supabase";
 import { Chess } from "chess.js";
 import { Send } from "lucide-react";
 import dynamic from "next/dynamic";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
 
 const Chessboard = dynamic(
   () => import("react-chessboard").then((m) => m.Chessboard),
@@ -26,6 +26,22 @@ export default function SpectatePage() {
   const [moves, setMoves] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [gameEnded, setGameEnded] = useState(false);
+
+  // Derive last-move highlight squares from move list
+  const lastMoveSquares = useMemo(() => {
+    if (!moves.length) return {};
+    try {
+      const t = new Chess();
+      for (const m of moves) { try { t.move(m); } catch {} }
+      const h = t.history({ verbose: true });
+      const lm = h[h.length - 1];
+      if (!lm) return {};
+      return {
+        [lm.from]: { backgroundColor: 'rgba(255,255,0,0.22)' },
+        [lm.to]:   { backgroundColor: 'rgba(255,255,0,0.32)' },
+      };
+    } catch { return {}; }
+  }, [moves]);
 
   const [messages, setMessages] = useState<SpectatorMessage[]>([]);
   const [draft, setDraft] = useState("");
@@ -300,6 +316,7 @@ export default function SpectatePage() {
               boardOrientation="white"
               customDarkSquareStyle={{ backgroundColor: "#2d4a3e" }}
               customLightSquareStyle={{ backgroundColor: "#f0d9b5" }}
+              customSquareStyles={lastMoveSquares}
             />
           </div>
 

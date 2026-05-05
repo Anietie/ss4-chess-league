@@ -143,22 +143,25 @@ export class StockfishWorker {
   // ── Full-game analysis — used by the anti-cheat pipeline ─────────────────
   //
   // Returns one entry per FEN (ply 0 = starting position, ply 1 = after move 1…).
-  // Each entry includes the top-3 engine moves at that depth so that the server
-  // can compute engine-correlation scores after the game.
+  // Score is ALWAYS from White's perspective (positive = white winning).
+  // We derive the sign from the FEN's active colour field — not from ply parity —
+  // so the orientation is correct even after captures that don't change ply parity.
   //
-  // depth 20 ≈ "genius" level — accurate enough that a human matching top-1
-  // at this depth on most moves is a strong cheat signal.
-  async analyseGame(fens: string[], depth = 20): Promise<AnalysisEntry[]> {
+  // depth 22 gives strong accuracy; chess.com uses 18–22 for cloud analysis.
+  async analyseGame(fens: string[], depth = 22): Promise<AnalysisEntry[]> {
     const results: AnalysisEntry[] = [];
 
     for (let i = 0; i < fens.length; i++) {
       const r = await this.evaluateMultiPV(fens[i], depth, 3);
-      // Score is always from white's perspective
-      const score = i % 2 === 0 ? r.score : -r.score;
+      // Determine whose turn it is from the FEN string ('w' or 'b' is field 2)
+      const sideToMove = fens[i].split(' ')[1];
+      // Stockfish reports score from the perspective of the side to move.
+      // Convert to White's perspective:
+      const score = sideToMove === 'w' ? r.score : -r.score;
       results.push({ ply: i, score, bestMove: r.bestMove, top3: r.top3 });
     }
 
-    // Reset MultiPV to 1 so the worker can be reused for normal single-move eval
+    // Reset MultiPV to 1 so the worker can be reused for single-move eval
     this.send('setoption name MultiPV value 1');
 
     return results;

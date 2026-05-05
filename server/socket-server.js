@@ -89,7 +89,8 @@ function createGameState(game) {
     last_move_ts: null,
     status: 'waiting',   // waiting | active | ended
     result: null,
-    is_rated: game.is_rated ?? false,  // preserved so endGame can skip ratings for unrated games
+    is_rated: game.is_rated ?? false,
+    competition_phase: game.competition_phase ?? null,  // for anticheat skip logic
     connected: new Set(),
     spectators: new Set(),
     disc_timers: new Map(),
@@ -380,7 +381,12 @@ async function endGame(gameId, result, pgn) {
   state.chess.header('Result', result);
   const finalPgn = state.chess.pgn();
 
-  io.to(`game:${gameId}`).emit('game_ended', { result, pgn: finalPgn, fen: state.chess.fen() });
+  io.to(`game:${gameId}`).emit('game_ended', {
+    result,
+    pgn: finalPgn,
+    fen: state.chess.fen(),
+    competition_phase: state.competition_phase ?? null,
+  });
   queueAnalysis(gameId, finalPgn);
 
   // ── STEP 1: Persist result + PGN directly to DB ───────────────────────────
