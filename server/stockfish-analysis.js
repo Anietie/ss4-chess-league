@@ -16,7 +16,7 @@
 'use strict';
 
 const { Chess }  = require('chess.js');
-const stockfish = require('../public/stockfish-18.js');
+const stockfish = require('../public/stockfish.js');
 
 const MOVETIME_MS = 1500;   // ms per position — strong enough for anti-cheat
 const MULTIPV     = 3;      // top-3 candidate moves per position
