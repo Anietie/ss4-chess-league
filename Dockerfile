@@ -11,6 +11,7 @@ RUN npm ci --omit=dev
 # Copy socket server and shared libs it needs
 COPY server/socket-server.js ./server/
 COPY server/stockfish-analysis.js ./server/ 
+COPY public/stockfish.js ./public/
 COPY src/lib/glicko2.ts ./src/lib/
 COPY src/lib/games-and-notifications.ts ./src/lib/
 
