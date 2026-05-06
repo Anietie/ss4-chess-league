@@ -99,24 +99,65 @@ export function NavBar() {
       }
     }
   }
+  // Find the useEffect that fetches leagues (around line 35-50)
+  // REPLACE it with this:
 
   useEffect(() => {
-      supabase
-        .from("players")
-        .select("home_league")
-        .eq("is_active", true)
-        .neq("home_league", "unassigned")
-        .neq("home_league", "calibration")
-        .then(({ data }) => {
-          const unique = [...new Set((data ?? []).map((p: any) => p.home_league))]
-            .filter((l: string) => /^league_\d+$/.test(l))
-            .sort(
-              (a: string, b: string) =>
-                parseInt(a.replace("league_", "")) -
-                parseInt(b.replace("league_", "")),
-            );
-          setLeagues(unique as string[]);
-        });
+      async function fetchLeagues() {
+        try {
+          const { data, error } = await supabase
+            .from("players")
+            .select("home_league")
+            .eq("is_active", true)
+            .neq("home_league", "unassigned")
+            .neq("home_league", "calibration");
+
+          if (error) {
+            console.error("[NavBar] League fetch error:", error.message);
+            return;
+          }
+
+          if (data && data.length > 0) {
+            const unique = [...new Set(data.map((p: any) => p.home_league))]
+              .filter((l: string) => /^league_\d+$/.test(l))
+              .sort((a: string, b: string) =>
+                parseInt(a.replace("league_", "")) - parseInt(b.replace("league_", ""))
+              );
+            
+            console.log("[NavBar] Leagues loaded:", unique);
+            setLeagues(unique);
+          } else {
+            // Fallback: try standings table
+            const { data: seasonData } = await supabase
+              .from("seasons")
+              .select("id")
+              .order("id", { ascending: false })
+              .limit(1)
+              .single();
+
+            if (seasonData) {
+              const { data: standingData } = await supabase
+                .from("standings")
+                .select("league")
+                .eq("season", seasonData.id);
+
+              if (standingData) {
+                const unique = [...new Set(standingData.map((s: any) => s.league))]
+                  .filter((l: string) => /^league_\d+$/.test(l))
+                  .sort((a: string, b: string) =>
+                    parseInt(a.replace("league_", "")) - parseInt(b.replace("league_", ""))
+                  );
+                console.log("[NavBar] Leagues from standings:", unique);
+                setLeagues(unique);
+              }
+            }
+          }
+        } catch (err) {
+          console.error("[NavBar] League fetch failed:", err);
+        }
+      }
+
+      fetchLeagues();
     }, []);
 
   const handleSignOut = async () => {
