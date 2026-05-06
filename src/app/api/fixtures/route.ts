@@ -137,7 +137,7 @@ export async function GET(req: NextRequest) {
     .from("games")
     .select(
       `
-      id, round, league, tier, result, scheduled_date, deadline_date, time_control, played_at,
+      id, round, league, result, scheduled_date, deadline_date, time_control, played_at,
       white_player:players!games_white_player_id_fkey(id, full_name, ss4_rating, is_provisional, rating_deviation),
       black_player:players!games_black_player_id_fkey(id, full_name, ss4_rating, is_provisional, rating_deviation)
     `,

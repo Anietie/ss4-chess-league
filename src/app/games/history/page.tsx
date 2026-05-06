@@ -10,7 +10,6 @@ type GameRow = {
   id: string;
   result: string;
   league: string;
-  tier?: string;
   played_at: string;
   time_control?: string;
   is_rated: boolean;
@@ -88,7 +87,7 @@ function GameHistoryContent() {
     let q = supabase
       .from('games')
       .select(`
-        id, result, league, tier, played_at, time_control, is_rated,
+        id, result, league, played_at, time_control, is_rated,
         white_player_id, black_player_id,
         white_rating_before, black_rating_before,
         white_rating_after,  black_rating_after,

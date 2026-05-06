@@ -21,13 +21,13 @@ export async function POST(req: NextRequest) {
   // Fetch game
   const { data: game, error: gameErr } = await supabase
     .from('games')
-    .select('white_player_id, black_player_id, season, league, tier')
+    .select('white_player_id, black_player_id, season, league')
     .eq('id', game_id)
     .single();
 
   if (gameErr || !game) {
-    console.error('[ratings/update] Game fetch failed:', gameErr?.message);
-    return NextResponse.json({ error: 'Game not found' }, { status: 404 });
+    console.error('[ratings/update] Game fetch failed (code=%s): %s', gameErr?.code, gameErr?.message);
+    return NextResponse.json({ error: 'Game not found', detail: gameErr?.message }, { status: 404 });
   }
 
   // Fetch players

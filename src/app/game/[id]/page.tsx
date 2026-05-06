@@ -114,7 +114,6 @@ export default function GameReviewPage() {
             </div>
             <div className="text-xs text-ink-500 mt-2">
               {leagueDisplayName(game.league)}
-              {game.tier && game.tier !== 'n_a' ? ` · ${game.tier}` : ''}
               {game.round ? ` · R${game.round}` : ''}
             </div>
             <div className="text-xs text-ink-600">
