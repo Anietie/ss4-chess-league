@@ -27,17 +27,21 @@ function LoginLogic() {
   }, [countdown]);
 
   const handleLogin = async () => {
-    if (!email || !password) { setError('Enter your email and password.'); return; }
-    setLoading(true); setError('');
+    if (!email || !password) { 
+      setError('Enter your email and password.'); 
+      return; 
+    }
+    setLoading(true); 
+    setError('');
 
     const { data, error: err } = await supabase.auth.signInWithPassword({ email, password });
-    setLoading(false);
-
+    
     if (err) {
-      if (err.message.includes('Email not confirmed')) {
-        setError('Please verify your email first. Check your inbox for a confirmation link.');
-      } else if (err.message.includes('Invalid login')) {
+      setLoading(false);
+      if (err.message.includes('Invalid login credentials')) {
         setError('Wrong email or password.');
+      } else if (err.message.includes('Email not confirmed')) {
+        setError('Please verify your email first. Check your inbox for a confirmation link.');
       } else {
         setError(err.message);
       }
@@ -45,12 +49,42 @@ function LoginLogic() {
     }
 
     if (data.user) {
-      const { data: player } = await supabase
-        .from('players').select('id').eq('email', data.user.email!).single();
-      if (player) localStorage.setItem('player_id', player.id);
-    }
+      // Check if player record exists
+      const { data: player, error: playerError } = await supabase
+        .from('players')
+        .select('id, is_active')
+        .eq('email', data.user.email!)
+        .maybeSingle();
 
-    router.replace(next);
+      if (playerError || !player) {
+        // Player record doesn't exist — sign them out and show helpful message
+        await supabase.auth.signOut();
+        setLoading(false);
+        setError(
+          'Your account was not found in the league database. ' +
+          'This may happen if your registration was removed. ' +
+          'Please register again to join the league.'
+        );
+        // Show register link
+        return;
+      }
+
+      if (!player.is_active) {
+        await supabase.auth.signOut();
+        setLoading(false);
+        setError(
+          'Your account has been deactivated. ' +
+          'Please contact a League Officer to reactivate your account.'
+        );
+        return;
+      }
+
+      localStorage.setItem('player_id', player.id);
+      
+      // Use router.push instead of router.replace for more reliable navigation
+      setLoading(false);
+      router.push(next);
+    }
   };
 
   const handleReset = async () => {

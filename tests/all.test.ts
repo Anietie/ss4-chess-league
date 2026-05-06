@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { updateRating, processGameResult } from '../src/lib/glicko2';
 import { formatRating } from '../src/lib/utils';
-import { runSnakeDraft, getLeagueCount, checkLeagueImbalance } from '../src/lib/snake-draft';
+import { runSnakeDraft, getLeagueCount, checkLeagueBalance } from '../src/lib/snake-draft';
 import { generateRoundRobin, generateSwissRound1 } from '../src/lib/fixture-generator';
 
 // ═══════════════════════════════════════════════════════════════
@@ -17,7 +17,6 @@ describe('Glicko-2 Rating Engine', () => {
       { opponentRating: 1700, opponentRD: 300, score: 0 },
     ]);
     expect(result.newRating).toBeCloseTo(1464, 0);
-    // Glickman paper gives 151.4 — allow ±1
     expect(result.newRD).toBeGreaterThan(150);
     expect(result.newRD).toBeLessThan(153);
   });
@@ -109,7 +108,6 @@ describe('Round Robin', () => {
 });
 
 describe('Swiss Round 1', () => {
-  // generateSwissRound1 returns { fixtures, standings } — not a plain array
   it('pairs by rating proximity — 8 players → 4 fixtures', () => {
     const { fixtures } = generateSwissRound1(makePlayers(8));
     expect(fixtures).toHaveLength(4);
@@ -123,14 +121,17 @@ describe('Swiss Round 1', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════
-// SNAKE DRAFT
+// SNAKE DRAFT (V2 — NO TIERS)
 // ═══════════════════════════════════════════════════════════════
+
 function makeDraftPlayers(n: number) {
   return Array.from({ length: n }, (_, i) => ({
     id: `p${i + 1}`,
     full_name: `Player ${i + 1}`,
     ss4_rating: 2000 - i * 40,
     rating_deviation: 80,
+    is_returning: false,
+    previous_league: undefined as string | undefined,
   }));
 }
 
@@ -140,28 +141,30 @@ describe('Snake Draft', () => {
     expect(result.assignments).toHaveLength(26);
   });
 
-  // Actual source: n <= 30 → 2 leagues. Min is always 2.
   it('correct league count for player sizes', () => {
-    expect(getLeagueCount(8)).toBe(2);   // source: n<=30 → 2
-    expect(getLeagueCount(16)).toBe(2);
-    expect(getLeagueCount(26)).toBe(2);
-    expect(getLeagueCount(32)).toBe(3);  // source: n<=45 → 3
-    expect(getLeagueCount(46)).toBe(4);  // source: n<=65 → 4
+    expect(getLeagueCount(8)).toBe(1);   // 8 fits in one league
+    expect(getLeagueCount(16)).toBe(2);  // 16 → 2 leagues of 8
+    expect(getLeagueCount(26)).toBe(4);  // 26 → 4 leagues (7+7+6+6)
+    expect(getLeagueCount(32)).toBe(5);  // 32 → 5 leagues (7+7+6+6+6)
+    expect(getLeagueCount(46)).toBe(6);  // 46 → 7 leagues (7×6 + 4)
   });
 
   it('balances ratings across leagues (max gap < 200)', () => {
-    const result = runSnakeDraft(makeDraftPlayers(26));
-    // result.stats is an array, not a Record
-    const avgs = result.stats.map(s => s.overall_avg_rating);
+    const players = makeDraftPlayers(26);
+    const result = runSnakeDraft(players);
+    const avgs = result.stats.map(s => s.avg_rating);
     const maxGap = Math.max(...avgs) - Math.min(...avgs);
     expect(maxGap).toBeLessThan(200);
   });
 
-  it('assigns premier and development tiers', () => {
-    const result = runSnakeDraft(makeDraftPlayers(16));
-    const tiers = new Set(result.assignments.map(a => a.assigned_tier));
-    expect(tiers).toContain('premier');
-    expect(tiers).toContain('development');
+  it('all players assigned to valid leagues', () => {
+    const players = makeDraftPlayers(16);
+    const result = runSnakeDraft(players);
+    const leagues = new Set(result.assignments.map(a => a.assigned_league));
+    for (const league of leagues) {
+      expect(league).toMatch(/^league_\d+$/);
+    }
+    expect(result.league_count).toBe(2);
   });
 
   it('draft positions are sequential', () => {
@@ -170,14 +173,23 @@ describe('Snake Draft', () => {
     positions.forEach((p, i) => expect(p).toBe(i + 1));
   });
 
-  it('imbalance check flags gap > 200', () => {
-    // Must match actual stats array shape: { league, premier_avg_rating, ... }[]
+  it('imbalance check flags gap > 150', () => {
     const stats = [
-      { league: 'league_1', premier_avg_rating: 1800, development_avg_rating: 1600, overall_avg_rating: 1700, player_count: 12 },
-      { league: 'league_2', premier_avg_rating: 1500, development_avg_rating: 1300, overall_avg_rating: 1400, player_count: 12 },
+      { league: 'league_1', player_count: 8, avg_rating: 1800, min_rating: 1700, max_rating: 1900, rating_spread: 200 },
+      { league: 'league_2', player_count: 8, avg_rating: 1500, min_rating: 1400, max_rating: 1600, rating_spread: 200 },
     ];
-    const check = checkLeagueImbalance(stats);
-    expect(check.imbalanced).toBe(true);
+    const balance = checkLeagueBalance(stats);
+    expect(balance.balanced).toBe(false);
+    expect(balance.worst_gap).toBe(300);
+  });
+
+  it('balanced leagues pass check', () => {
+    const stats = [
+      { league: 'league_1', player_count: 7, avg_rating: 1600, min_rating: 1500, max_rating: 1700, rating_spread: 200 },
+      { league: 'league_2', player_count: 7, avg_rating: 1620, min_rating: 1520, max_rating: 1720, rating_spread: 200 },
+    ];
+    const balance = checkLeagueBalance(stats);
+    expect(balance.balanced).toBe(true);
   });
 });
 

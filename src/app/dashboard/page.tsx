@@ -50,30 +50,36 @@ export default function DashboardPage() {
 
   // Subscribe to real-time player updates
   useEffect(() => {
-    if (!playerId) return;
-
-    const channel = supabase
-      .channel(`player-${playerId}`)
-      .on(
-        "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "players",
-          filter: `id=eq.${playerId}`,
-        },
-        (payload: any) => {
-          if (payload.new) {
-            setPlayer(payload.new);
-          }
-        },
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [playerId]);
+    const id = localStorage.getItem("player_id");
+    if (!id) {
+      // Check if user is authenticated but player_id not stored
+      supabase.auth.getUser().then(({ data: { user } }) => {
+        if (user) {
+          // User is authenticated, fetch player by email
+          supabase
+            .from("players")
+            .select("id")
+            .eq("email", user.email!)
+            .single()
+            .then(({ data: player }) => {
+              if (player) {
+                localStorage.setItem("player_id", player.id);
+                setPlayerId(player.id);
+                fetchPlayerData(player.id).then(() => setLoading(false));
+              } else {
+                // Authenticated but no player record
+                window.location.href = "/register";
+              }
+            });
+        } else {
+          window.location.href = "/auth/login";
+        }
+      });
+      return;
+    }
+    setPlayerId(id);
+    fetchPlayerData(id).then(() => setLoading(false));
+  }, []);
 
   const markRead = async (id: string) => {
     await fetch(`/api/notifications/${id}`, {

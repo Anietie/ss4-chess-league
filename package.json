@@ -9,7 +9,13 @@
     "build": "next build",
     "start": "next start",
     "server": "node server/socket-server.js",
-    "dev:all": "concurrently \"npm run dev\" \"npm run server\""
+    "dev:all": "concurrently \"npm run dev\" \"npm run server\"",
+    "test:smoke": "npx tsx scripts/smoke-test.ts",
+    "test:season": "npx tsx scripts/test-full-season.ts --commit",
+    "test:disconnect": "npx tsx scripts/test-disconnect.ts",
+    "test:anticheat": "npx tsx scripts/test-anticheat.ts",
+    "test:manual": "echo 'See TESTING_CHECKLIST.md' && open TESTING_CHECKLIST.md",
+    "test:all": "npm run test:smoke && npm run test:season"
   },
   "dependencies": {
     "@supabase/ssr": "^0.10.2",
@@ -21,7 +27,6 @@
     "concurrently": "^8.2.2",
     "cors": "^2.8.5",
     "date-fns": "^3.6.0",
-    "dotenv": "^17.4.2",
     "express": "^4.19.2",
     "framer-motion": "^11.1.9",
     "lucide-react": "^0.383.0",
@@ -34,9 +39,9 @@
     "recharts": "^2.12.6",
     "socket.io": "^4.7.5",
     "socket.io-client": "^4.7.5",
+    "stockfish": "^16.0.0",
     "tailwind-merge": "^2.3.0",
-    "zustand": "^4.5.2",
-    "stockfish": "^16.0.0"
+    "zustand": "^4.5.2"
   },
   "devDependencies": {
     "@types/cors": "^2.8.17",
@@ -45,6 +50,7 @@
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
     "autoprefixer": "^10.4.19",
+    "dotenv": "^17.4.2",
     "postcss": "^8.4.38",
     "tailwindcss": "^3.4.4",
     "tsx": "^4.11.0",

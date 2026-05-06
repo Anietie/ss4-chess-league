@@ -92,13 +92,14 @@ export async function POST(req: NextRequest) {
 
   // ── Persist draft assignments ───────────────────────────────────────────────
   const draftRows = result.assignments.map(a => ({
-    season,
-    player_id:           a.player_id,
-    draft_position:      a.draft_position,
-    assigned_league:     a.assigned_league,
-    seed_rating_at_draft: a.seed_rating,
-    is_returning:        a.is_returning,
-    previous_league:     a.previous_league,
+      season,
+      player_id:           a.player_id,
+      draft_position:      a.draft_position,
+      assigned_league:     a.assigned_league,
+      seed_rating:         a.seed_rating || 1000,  // Required by schema
+      seed_rating_at_draft: a.seed_rating || 1000,  // Added by migration_v2
+      is_returning:        a.is_returning ?? false,
+      previous_league:     a.previous_league ?? null,
   }));
 
   const { error: dErr } = await supabase
