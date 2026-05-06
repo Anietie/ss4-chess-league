@@ -527,13 +527,13 @@ export default function GameReviewPage() {
 
             {/* Vertical eval bar */}
             <div className="flex flex-col w-4 rounded overflow-hidden border border-ink-700 flex-shrink-0 relative"
-              style={{ background: '#0d1117' }}>
-              {/* White section */}
+              style={{ background: '#1a1a2e' }}>
+              {/* White section — at top, grows when white is winning */}
               <div
                 className="transition-all duration-300 bg-chalk"
-                style={{ height: `${100 - whiteAdvPct}%` }}
+                style={{ height: `${whiteAdvPct}%` }}
               />
-              {/* Black section fills the rest */}
+              {/* Black fills the rest */}
             </div>
 
             {/* Board */}
