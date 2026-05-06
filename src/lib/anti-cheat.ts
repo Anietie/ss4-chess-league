@@ -86,10 +86,10 @@ export function computeCorrelationScore(
   const correlation_score = Math.round(top1Pct * 0.5 + top3Pct * 0.25 + cplScore * 0.25);
 
   // Require at least 10 moves to avoid false positives on very short games
-  const flag = correlation_score >= THRESHOLD && n >= 10;
+  const flag = correlation_score >= THRESHOLD && n >= 25;
 
   let verdict = 'clean';
-  if (n < 10)   verdict = 'insufficient_moves';
+  if (n < 25)   verdict = 'insufficient_moves';
   else if (flag) verdict = correlation_score >= 90 ? 'strong_suspicion' : 'elevated_correlation';
 
   return {
