@@ -101,24 +101,23 @@ export function NavBar() {
   }
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session?.user) loadPlayer(session.user.email);
-    });
-
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
-      if (session?.user) {
-        loadPlayer(session.user.email);
-      } else {
-        setPlayer(null);
-        setUnread(0);
-      }
-    });
-
-    return () => subscription.unsubscribe();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+      supabase
+        .from("players")
+        .select("home_league")
+        .eq("is_active", true)
+        .neq("home_league", "unassigned")
+        .neq("home_league", "calibration")
+        .then(({ data }) => {
+          const unique = [...new Set((data ?? []).map((p: any) => p.home_league))]
+            .filter((l: string) => /^league_\d+$/.test(l))
+            .sort(
+              (a: string, b: string) =>
+                parseInt(a.replace("league_", "")) -
+                parseInt(b.replace("league_", "")),
+            );
+          setLeagues(unique as string[]);
+        });
+    }, []);
 
   const handleSignOut = async () => {
     setShowSignOutConfirm(false);
