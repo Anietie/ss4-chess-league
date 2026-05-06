@@ -3,6 +3,11 @@
  * Run with: node server/socket-server.js
  * Deploy separately on Railway / Render alongside Next.js.
  */
+
+// Load .env.local in local dev only (Render injects env vars in production)
+if (process.env.NODE_ENV !== 'production') {
+  try { require('dotenv').config({ path: '.env.local' }); } catch {}
+}
 const express = require('express');
 const { createServer } = require('http');
 const { Server } = require('socket.io');
@@ -10,7 +15,14 @@ const { Chess } = require('chess.js');
 const cors = require('cors');
 const { createClient } = require('@supabase/supabase-js');
 const { initGameEngine, queuePosition, flushGameAnalysis, destroyGameEngine, analyseGameServerSide } = require('./stockfish-analysis');
-require('dotenv').config({ path: '.env.local' });
+// Load env vars from .env.local only in local development
+if (process.env.NODE_ENV !== 'production') {
+  try {
+    require('dotenv').config({ path: '.env.local' });
+  } catch {
+    // dotenv not installed — probably production, env vars are injected
+  }
+}
 
 const app = express();
 
