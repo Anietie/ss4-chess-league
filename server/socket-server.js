@@ -9,7 +9,7 @@ const { Server } = require('socket.io');
 const { Chess } = require('chess.js');
 const cors = require('cors');
 const { createClient } = require('@supabase/supabase-js');
-const { analyseGameServerSide } = require('./stockfish-analysis');
+const { initGameEngine, queuePosition, flushGameAnalysis, destroyGameEngine, analyseGameServerSide } = require('./stockfish-analysis');
 require('dotenv').config({ path: '.env.local' });
 
 const app = express();
@@ -88,10 +88,10 @@ function createGameState(game) {
     white_time: baseMs, black_time: baseMs,
     increment: incMs, base_time: baseMs,
     last_move_ts: null,
-    status: 'waiting',   // waiting | active | ended
+    status: 'waiting',
     result: null,
-    is_rated: game.is_rated ?? true,   // default TRUE — only explicit false skips ratings
-    competition_phase: game.competition_phase ?? null,  // for anticheat skip logic
+    is_rated: game.is_rated ?? true,
+    competition_phase: game.competition_phase ?? null,
     connected: new Set(),
     spectators: new Set(),
     disc_timers: new Map(),
@@ -266,6 +266,13 @@ io.on('connection', socket => {
         console.log(`[join_game] ✓✓✓ BOTH PLAYERS CONNECTED — starting game!`);
         state.status = 'active';
         state.last_move_ts = Date.now();
+
+        // Start per-game Stockfish engine — analyses starting position now,
+        // then each position as moves arrive. Review page will be instant at game end.
+        initGameEngine(game_id).catch(e =>
+          console.warn(`[join_game] Stockfish init failed (non-fatal):`, e?.message)
+        );
+
         io.to(room).emit('game_started', {
           white_player_id: state.white_player_id, black_player_id: state.black_player_id,
           white_time: state.white_time, black_time: state.black_time,
@@ -307,10 +314,14 @@ io.on('connection', socket => {
 
       io.to(`game:${game_id}`).emit('move_made', {
         move: result, fen: state.chess.fen(),
-        pgn: state.chess.pgn(),   // ← needed by client to rebuild full move history
+        pgn: state.chess.pgn(),
         white_time: state.white_time, black_time: state.black_time,
         current_turn: state.chess.turn(), move_number: state.chess.history().length,
       });
+
+      // Queue the resulting position for incremental Stockfish analysis (fire-and-forget)
+      const plyNum = state.chess.history().length;
+      queuePosition(game_id, state.chess.fen(), plyNum);
 
       if (state.chess.isGameOver()) {
         const gameResult = state.chess.isCheckmate()
@@ -389,17 +400,36 @@ async function endGame(gameId, result, pgn) {
     competition_phase: state.competition_phase ?? null,
   });
 
-  // ── Fire-and-forget server-side anti-cheat analysis ───────────────────────
-  // Only run for scorable, non-calibration, rated or competitive games.
-  // We DON'T await this — it takes 3–5 mins and must not block endGame.
+  // ── Flush incremental Stockfish analysis ──────────────────────────────────
+  // The engine ran during the game — just drain the last 1-2 pending positions,
+  // save analysis_json to DB (review page loads instantly), then run anticheat.
   const scorableResult = ['1-0', '0-1', '0.5-0.5'].includes(result);
-  if (scorableResult && state.competition_phase !== 'calibration' && finalPgn) {
-    runAnticheatPipeline(
-      gameId, finalPgn,
-      state.white_name, state.black_name,
-      state.white_player_id, state.black_player_id,
-      state.competition_phase,
-    ).catch(err => console.error('[anticheat] Unhandled pipeline error:', err?.message));
+  if (scorableResult && finalPgn) {
+    flushGameAnalysis(gameId).then(async (analysisJson) => {
+      if (analysisJson.length > 0) {
+        const { error: aErr } = await supabase.from('games').update({
+          analysis_json:     analysisJson,
+          analysis_complete: true,
+        }).eq('id', gameId);
+        if (aErr) console.error('[endGame] analysis_json save failed:', aErr.message);
+        else console.log(`[endGame] ✓ ${analysisJson.length} positions saved — review ready`);
+      }
+
+      if (state.competition_phase !== 'calibration') {
+        runAnticheatPipeline(
+          gameId, finalPgn,
+          state.white_name, state.black_name,
+          state.white_player_id, state.black_player_id,
+          state.competition_phase,
+          analysisJson.length > 0 ? analysisJson : null,
+        ).catch(e => console.error('[anticheat] Pipeline error:', e?.message));
+      }
+    }).catch(e => {
+      console.error('[endGame] flushGameAnalysis failed:', e?.message);
+      destroyGameEngine(gameId);
+    });
+  } else {
+    destroyGameEngine(gameId);
   }
 
   // ── STEP 1: Persist result + PGN directly to DB ───────────────────────────
@@ -626,28 +656,22 @@ const { computeCorrelationScore } = (() => {
   return { computeCorrelationScore };
 })();
 
-async function runAnticheatPipeline(gameId, pgn, whiteName, blackName, whitePlayerId, blackPlayerId, competitionPhase) {
-  // Never analyse calibration games — players are supposed to match the engine
-  if (competitionPhase === 'calibration') {
-    console.log(`[anticheat] Skipping calibration game ${gameId}`);
-    return;
-  }
-
-  console.log(`[anticheat] Starting server-side Stockfish analysis for game ${gameId} (${whiteName} vs ${blackName})`);
+async function runAnticheatPipeline(gameId, pgn, whiteName, blackName, whitePlayerId, blackPlayerId, competitionPhase, prebuiltAnalysis = null) {
+  if (competitionPhase === 'calibration') return;
+  console.log(`[anticheat] Pipeline for game ${gameId} (${whiteName} vs ${blackName})`);
 
   try {
-    // ── Step 1: Analyse with real Stockfish ──────────────────────────────────
-    const analysisJson = await analyseGameServerSide(pgn);
-    if (!analysisJson.length) {
-      console.warn(`[anticheat] Empty analysis for game ${gameId} — skipping`);
-      return;
-    }
+    let analysisJson = prebuiltAnalysis;
 
-    // ── Step 2: Save analysis to DB ──────────────────────────────────────────
-    const { error: saveErr } = await supabase.from('games')
-      .update({ analysis_json: analysisJson, analysis_complete: true })
-      .eq('id', gameId);
-    if (saveErr) console.error(`[anticheat] Failed to save analysis_json:`, saveErr.message);
+    if (!analysisJson || analysisJson.length === 0) {
+      // Fallback batch analysis — only for games without incremental data
+      console.log(`[anticheat] No prebuilt analysis — running batch Stockfish depth ${20}`);
+      analysisJson = await analyseGameServerSide(pgn);
+      if (!analysisJson.length) { console.warn(`[anticheat] Empty analysis — skipping`); return; }
+      await supabase.from('games').update({ analysis_json: analysisJson, analysis_complete: true }).eq('id', gameId);
+    } else {
+      console.log(`[anticheat] Using prebuilt analysis (${analysisJson.length} positions)`);
+    }
 
     // ── Step 3: Compute correlation scores ───────────────────────────────────
     const chess = new Chess();

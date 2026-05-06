@@ -353,10 +353,17 @@ export default function GameReviewPage() {
       if (!result) return;
       const { fens, hasRealAnalysis } = result;
 
-      // Always run Stockfish depth-22 for the best possible analysis.
-      // The server-side fallback (PST evaluator, depth-1) is intentionally
-      // overwritten by this. Analysis is saved back to DB via anticheat API.
-      runStockfishAnalysis(fens, id as string);
+      if (hasRealAnalysis) {
+        // Server analysed this game during play — instant load, no client Stockfish
+        console.log('[review] Server analysis found — instant load');
+        setAnalysisReady(true);
+        if (g.analysis_json?.length) processEvalData(g.analysis_json);
+      } else {
+        // Old game without server analysis — run client-side Stockfish as fallback
+        // Result is saved to DB so next visit is instant
+        console.log('[review] No server analysis — running client-side Stockfish');
+        runStockfishAnalysis(fens, id as string);
+      }
     };
     load();
   }, [id, processGame, runStockfishAnalysis]);

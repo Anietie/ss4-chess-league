@@ -78,9 +78,9 @@ export async function POST(req: NextRequest) {
   // Supabase rejects null on a NOT NULL integer column, crashing the whole update
   // and silently leaving ratings unchanged. Fix: default to 0 with ?? before adding.
   //
-  // ── BUG 3 FIX: is_provisional was never updated after rating changes ──────────
-  // Players stay marked as provisional (showing "1234?") indefinitely even after
-  // their RD drops below 100. Sync it here on every rating update.
+  // NOTE: is_provisional is a generated column in the database schema
+  // (`GENERATED ALWAYS AS (rating_deviation > 100) STORED`). Do not write to it
+  // directly here — Postgres will reject the update and abort rating changes.
 
   // Update white player
   const { error: whiteErr } = await supabase.from('players').update({
@@ -88,7 +88,6 @@ export async function POST(req: NextRequest) {
     rating_deviation: updates.white.newRD,
     volatility:       updates.white.newVolatility,
     games_played:     (white.games_played ?? 0) + 1,   // BUG 2 FIX
-    is_provisional:   updates.white.newRD > 100,        // BUG 3 FIX
   }).eq('id', white.id);
 
   if (whiteErr) {
@@ -102,7 +101,6 @@ export async function POST(req: NextRequest) {
     rating_deviation: updates.black.newRD,
     volatility:       updates.black.newVolatility,
     games_played:     (black.games_played ?? 0) + 1,   // BUG 2 FIX
-    is_provisional:   updates.black.newRD > 100,        // BUG 3 FIX
   }).eq('id', black.id);
 
   if (blackErr) {
