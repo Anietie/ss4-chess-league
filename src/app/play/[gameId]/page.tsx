@@ -1,13 +1,18 @@
 "use client";
 import { SoundToggle } from "@/components/chess/SoundToggle";
+import { CountdownBadge } from "@/components/ui/CountdownBadge";
 import { useSound } from "@/hooks/useSound";
 import { supabase } from "@/lib/supabase";
 import { Chess } from "chess.js";
 import {
+  AlertTriangle,
+  Bell,
+  Clock as ClockIcon,
   Download,
   Eye,
   Flag,
   Handshake,
+  MessageCircle,
   RotateCcw,
   ShieldAlert,
 } from "lucide-react";
@@ -15,12 +20,12 @@ import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { io, Socket } from "socket.io-client";
 
 function isTouchDevice() {
   if (typeof window === "undefined") return false;
   return window.matchMedia("(pointer: coarse)").matches;
 }
-import { io, Socket } from "socket.io-client";
 
 const Chessboard = dynamic(
   () => import("react-chessboard").then((m) => m.Chessboard),
@@ -121,25 +126,28 @@ export default function GameRoomPage() {
   const [drawOffered, setDrawOffered] = useState(false);
   const [spectators, setSpectators] = useState(0);
   const { play, enabled: soundEnabled, toggle: toggleSound } = useSound();
-  // Keep a ref to always-current `play` so socket handlers (set up once, deps=[])
-  // don't capture a stale closure — toggling sound takes effect on next move.
   const playRef = useRef(play);
-  useEffect(() => { playRef.current = play; }, [play]);
+  useEffect(() => {
+    playRef.current = play;
+  }, [play]);
 
   // TAP-TO-MOVE STATE
   const [moveFrom, setMoveFrom] = useState<any>(null);
   const [optionSquares, setOptionSquares] = useState({});
-  // Last move highlighting — shown on board so players can spot opponent's move
-  const [lastMoveSquares, setLastMoveSquares] = useState<Record<string, React.CSSProperties>>({});
+  const [lastMoveSquares, setLastMoveSquares] = useState<
+    Record<string, React.CSSProperties>
+  >({});
 
-  // CONFIRM MOVE STATE — chess.com-style: preview move on board, confirm before sending
+  // CONFIRM MOVE STATE
   const [confirmMove, setConfirmMove] = useState<boolean>(() => {
-    if (typeof window === 'undefined') return false;
-    return localStorage.getItem('confirmMove') === 'true';
+    if (typeof window === "undefined") return false;
+    return localStorage.getItem("confirmMove") === "true";
   });
-  // pendingMove: a move the player has dragged/clicked but not yet confirmed
-  const [pendingMove, setPendingMove] = useState<{ from: string; to: string; promotion: string } | null>(null);
-  // pendingFen: board position AFTER the pending move (for display only, not sent to server yet)
+  const [pendingMove, setPendingMove] = useState<{
+    from: string;
+    to: string;
+    promotion: string;
+  } | null>(null);
   const [pendingFen, setPendingFen] = useState<string | null>(null);
 
   const socketRef = useRef<Socket | null>(null);
@@ -159,224 +167,308 @@ export default function GameRoomPage() {
 
   const myPlayerIdRef = useRef<string | null>(null);
 
+  // WhatsApp numbers for opponent contact
+  const [whiteWhatsapp, setWhiteWhatsapp] = useState<string | null>(null);
+  const [blackWhatsapp, setBlackWhatsapp] = useState<string | null>(null);
+
+  // Nudge cooldown
+  const [nudgeCooldown, setNudgeCooldown] = useState(0);
+
+  // No-show claim state
+  const [claimPending, setClaimPending] = useState(false);
+  const [claimGraceEndsAt, setClaimGraceEndsAt] = useState<string | null>(null);
+  const [claimGraceMinutes, setClaimGraceMinutes] = useState(0);
+  const [claimCountdown, setClaimCountdown] = useState(0);
+
+  // Round window for countdown
+  const [roundWindow, setRoundWindow] = useState<any>(null);
+
+  // Nudge cooldown timer
+  useEffect(() => {
+    if (nudgeCooldown <= 0) return;
+    const timer = setInterval(() => setNudgeCooldown((c) => c - 1), 1000);
+    return () => clearInterval(timer);
+  }, [nudgeCooldown]);
+
+  // Grace period countdown
+  useEffect(() => {
+    if (!claimGraceEndsAt) {
+      setClaimCountdown(0);
+      return;
+    }
+    const update = () => {
+      const remaining = Math.max(
+        0,
+        Math.floor((new Date(claimGraceEndsAt).getTime() - Date.now()) / 1000),
+      );
+      setClaimCountdown(remaining);
+    };
+    update();
+    const timer = setInterval(update, 1000);
+    return () => clearInterval(timer);
+  }, [claimGraceEndsAt]);
+
   useEffect(() => {
     let sock: Socket;
 
     async function init() {
       try {
-        // ── Step 1: Get auth identity ─────────────────────────────────────────
-        // getSession() reads from browser cookies (no network round-trip to Supabase).
-        // getUser() makes a network call to /auth/v1/user on every mount which can
-        // hang on slow networks or Render free-tier cold starts, keeping status=loading.
-        const { data: { session } } = await supabase.auth.getSession();
-        if (!session?.user) { setStatus('unauthorized'); return; }
+        const {
+          data: { session },
+        } = await supabase.auth.getSession();
+        if (!session?.user) {
+          setStatus("unauthorized");
+          return;
+        }
         const user = session.user;
 
-        // ── Step 2: Resolve player_id on the CLIENT before connecting ─────────
-        // If we rely purely on the server to resolve auth_user_id → player_id,
-        // legacy players whose auth_user_id column is NULL in the DB join as
-        // spectators — so state.connected never has both players → game_started
-        // never fires. Resolve it here once so we always pass a concrete player_id.
         let resolvedPlayerId: string | null =
-          typeof window !== 'undefined' ? localStorage.getItem('player_id') : null;
+          typeof window !== "undefined"
+            ? localStorage.getItem("player_id")
+            : null;
 
         if (!resolvedPlayerId) {
-          // auth_user_id column may be NULL for players created before it was added.
-          // Try the fast path first; fall back to looking up by supabase uid column.
           const { data: byAuthId } = await supabase
-            .from('players')
-            .select('id')
-            .eq('auth_user_id', user.id)
+            .from("players")
+            .select("id")
+            .eq("auth_user_id", user.id)
             .maybeSingle();
 
           if (byAuthId?.id) {
             resolvedPlayerId = byAuthId.id;
           } else {
-            // Legacy players: auth_user_id column is NULL. Try matching on supabase_uid
-            // or any column the app uses to link auth → player. Worst case, the server
-            // will resolve it and echo back your_player_id in game_state.
-            console.warn('[init] auth_user_id lookup returned nothing — will rely on server resolution');
+            console.warn(
+              "[init] auth_user_id lookup returned nothing — will rely on server resolution",
+            );
           }
 
           if (resolvedPlayerId) {
-            localStorage.setItem('player_id', resolvedPlayerId);
+            localStorage.setItem("player_id", resolvedPlayerId);
           }
         }
 
         myPlayerIdRef.current = resolvedPlayerId;
 
-        // ── Step 3: Connect to socket server ──────────────────────────────────
         const socketUrl = process.env.NEXT_PUBLIC_SOCKET_URL;
         if (!socketUrl) {
-          console.error('[socket] NEXT_PUBLIC_SOCKET_URL is not set — check Vercel env vars');
+          console.error(
+            "[socket] NEXT_PUBLIC_SOCKET_URL is not set — check Vercel env vars",
+          );
         }
 
-        sock = io(socketUrl || 'http://localhost:3001', {
-          transports: ['websocket', 'polling'],
+        sock = io(socketUrl || "http://localhost:3001", {
+          transports: ["websocket", "polling"],
           timeout: 20000,
           reconnectionAttempts: 5,
           reconnectionDelay: 2000,
         });
         socketRef.current = sock;
 
-        sock.on('connect', () => {
-          console.log('[socket] connected | game:', gameId, '| auth:', user.id, '| player:', resolvedPlayerId);
-          sock.emit('join_game', {
+        sock.on("connect", () => {
+          console.log(
+            "[socket] connected | game:",
+            gameId,
+            "| auth:",
+            user.id,
+            "| player:",
+            resolvedPlayerId,
+          );
+          sock.emit("join_game", {
             game_id: gameId,
-            auth_user_id: user.id,       // server uses this to verify identity
-            player_id: resolvedPlayerId, // already resolved — server falls back to this
+            auth_user_id: user.id,
+            player_id: resolvedPlayerId,
             is_spectator: false,
           });
         });
 
-        sock.on('connect_error', (err) => {
-          console.error('[socket] connect_error:', err.message);
-          // Don't leave user stuck on "Loading" — show "Waiting" so they know something happened
-          setStatus('waiting');
+        sock.on("connect_error", (err) => {
+          console.error("[socket] connect_error:", err.message);
+          setStatus("waiting");
         });
 
-      sock.on("game_state", (d) => {
-        if (d.pgn) chess.loadPgn(d.pgn);
-        setFen(d.fen || chess.fen());
-        setMoves(chess.history());
-        setStatus(d.status === "active" ? "active" : "waiting");
-        setSpectators(d.spectator_count || 0);
+        sock.on("game_state", (d) => {
+          if (d.pgn) chess.loadPgn(d.pgn);
+          setFen(d.fen || chess.fen());
+          setMoves(chess.history());
+          setStatus(d.status === "active" ? "active" : "waiting");
+          setSpectators(d.spectator_count || 0);
+          setWhiteWhatsapp(d.white_whatsapp || null);
+          setBlackWhatsapp(d.black_whatsapp || null);
 
-        // Server echoes back our resolved player_id — use it as the source of truth.
-        // This handles the case where the client-side auth_user_id lookup would have
-        // failed (e.g., auth_user_id was null for legacy players in the DB).
-        if (d.your_player_id) {
-          myPlayerIdRef.current = d.your_player_id;
-          localStorage.setItem('player_id', d.your_player_id);
-        }
+          if (d.your_player_id) {
+            myPlayerIdRef.current = d.your_player_id;
+            localStorage.setItem("player_id", d.your_player_id);
+          }
 
-        const myId = myPlayerIdRef.current;
-        if (myId && d.white_player_id && d.black_player_id) {
+          const myId = myPlayerIdRef.current;
+          if (myId && d.white_player_id && d.black_player_id) {
+            if (myId === d.white_player_id) myColorRef.current = "white";
+            else if (myId === d.black_player_id) myColorRef.current = "black";
+          }
+          setWhite((p) => ({
+            ...p,
+            name: d.white_name || p.name,
+            rating: d.white_rating || p.rating,
+            timeMs: d.white_time,
+            isActive: d.current_turn === "w" && d.status === "active",
+          }));
+          setBlack((p) => ({
+            ...p,
+            name: d.black_name || p.name,
+            rating: d.black_rating || p.rating,
+            timeMs: d.black_time,
+            isActive: d.current_turn === "b" && d.status === "active",
+          }));
+        });
+
+        sock.on("game_started", (d) => {
+          setStatus("active");
+          const myId = myPlayerIdRef.current;
           if (myId === d.white_player_id) myColorRef.current = "white";
-          else if (myId === d.black_player_id) myColorRef.current = "black";
-        }
-        setWhite((p) => ({
-          ...p,
-          name:   d.white_name   || p.name,
-          rating: d.white_rating || p.rating,
-          timeMs: d.white_time,
-          isActive: d.current_turn === "w" && d.status === "active",
-        }));
-        setBlack((p) => ({
-          ...p,
-          name:   d.black_name   || p.name,
-          rating: d.black_rating || p.rating,
-          timeMs: d.black_time,
-          isActive: d.current_turn === "b" && d.status === "active",
-        }));
-      });
+          if (myId === d.black_player_id) myColorRef.current = "black";
+          setWhite((p) => ({
+            ...p,
+            name: d.white_name || p.name,
+            rating: d.white_rating || p.rating,
+            timeMs: d.white_time,
+            isActive: true,
+          }));
+          setBlack((p) => ({
+            ...p,
+            name: d.black_name || p.name,
+            rating: d.black_rating || p.rating,
+            timeMs: d.black_time,
+            isActive: false,
+          }));
+        });
 
-      sock.on("game_started", (d) => {
-        setStatus("active");
-        // Use ref here — myPlayerIdRef is already populated from game_state which
-        // arrives just before this event. Never use a stale closure variable.
-        const myId = myPlayerIdRef.current;
-        if (myId === d.white_player_id) myColorRef.current = "white";
-        if (myId === d.black_player_id) myColorRef.current = "black";
-        setWhite((p) => ({
-          ...p,
-          name:   d.white_name   || p.name,
-          rating: d.white_rating || p.rating,
-          timeMs: d.white_time, isActive: true,
-        }));
-        setBlack((p) => ({
-          ...p,
-          name:   d.black_name   || p.name,
-          rating: d.black_rating || p.rating,
-          timeMs: d.black_time, isActive: false,
-        }));
-      });
-
-      sock.on("move_made", (d) => {
-        // chess.load(fen) only loads a position — it wipes all move history.
-        // chess.loadPgn(pgn) restores the full game including all past moves,
-        // which is what we need for move history display and sound detection.
-        if (d.pgn) {
-          chess.loadPgn(d.pgn);
-        } else {
-          // Fallback for older server versions that don't send pgn
-          chess.load(d.fen);
-        }
-        const history = chess.history({ verbose: true });
-        const lastMove = history[history.length - 1];
-        if (lastMove?.promotion) playRef.current("promote");
-        else if (lastMove?.flags?.includes("k") || lastMove?.flags?.includes("q")) playRef.current("castle");
-        else if (chess.isCheck()) playRef.current("check");
-        else if (lastMove?.captured) playRef.current("capture");
-        else playRef.current("move");
-        setFen(chess.fen());
-        setMoves(chess.history());
-        setWhite((p) => ({ ...p, timeMs: d.white_time, isActive: d.current_turn === "w" }));
-        setBlack((p) => ({ ...p, timeMs: d.black_time, isActive: d.current_turn === "b" }));
-        // Highlight the from/to squares of the last move
-        if (lastMove) {
-          setLastMoveSquares({
-            [lastMove.from]: { backgroundColor: 'rgba(255, 255, 0, 0.25)' },
-            [lastMove.to]:   { backgroundColor: 'rgba(255, 255, 0, 0.35)' },
-          });
-        }
-        // Clear any pending confirm-move state when a move_made arrives
-        setPendingMove(null);
-        setPendingFen(null);
-      });
-
-      sock.on("game_ended", async (d) => {
-        setStatus("ended");
-        setResult(d.result);
-        if (d.pgn) {
-          setFinalPgn(d.pgn);
-          try {
+        sock.on("move_made", (d) => {
+          if (d.pgn) {
             chess.loadPgn(d.pgn);
-            setFen(chess.fen());
-            setMoves(chess.history());
-          } catch {}
-        }
-        setWhite((p) => ({ ...p, isActive: false }));
-        setBlack((p) => ({ ...p, isActive: false }));
-        if (myColorRef.current) {
-          const iWon = (d.result === "1-0" && myColorRef.current === "white") || (d.result === "0-1" && myColorRef.current === "black");
-          if (iWon) playRef.current("win");
-          else if (d.result === "0.5-0.5") playRef.current("draw");
-          else playRef.current("loss");
-        }
-        // Anti-cheat analysis runs server-side (fire-and-forget in socket-server.js).
-        // No client-side Stockfish needed here — results appear in DB when ready.
-      });
-      sock.on("draw_offered", ({ by_player_id }) => {
-        if (by_player_id !== myPlayerIdRef.current) setDrawOffered(true);
-      });
-      sock.on("spectator_count", ({ count }) => setSpectators(count));
-      sock.on("error", ({ message }) => {
-        console.error("[socket error]", message);
-        setStatus("ended");
-        setResult(message || "Server error");
-      });
-      sock.on("game_already_finished", ({ result: r, pgn: finishedPgn }) => {
-        setStatus("ended");
-        setResult(r);
-        if (finishedPgn) {
-          try {
-            chess.loadPgn(finishedPgn);
-            setFen(chess.fen());
-            setMoves(chess.history());
-            setFinalPgn(finishedPgn);
-          } catch {}
-        }
-      });
+          } else {
+            chess.load(d.fen);
+          }
+          const history = chess.history({ verbose: true });
+          const lastMove = history[history.length - 1];
+          if (lastMove?.promotion) playRef.current("promote");
+          else if (
+            lastMove?.flags?.includes("k") ||
+            lastMove?.flags?.includes("q")
+          )
+            playRef.current("castle");
+          else if (chess.isCheck()) playRef.current("check");
+          else if (lastMove?.captured) playRef.current("capture");
+          else playRef.current("move");
+          setFen(chess.fen());
+          setMoves(chess.history());
+          setWhite((p) => ({
+            ...p,
+            timeMs: d.white_time,
+            isActive: d.current_turn === "w",
+          }));
+          setBlack((p) => ({
+            ...p,
+            timeMs: d.black_time,
+            isActive: d.current_turn === "b",
+          }));
+          if (lastMove) {
+            setLastMoveSquares({
+              [lastMove.from]: { backgroundColor: "rgba(255, 255, 0, 0.25)" },
+              [lastMove.to]: { backgroundColor: "rgba(255, 255, 0, 0.35)" },
+            });
+          }
+          setPendingMove(null);
+          setPendingFen(null);
+        });
 
+        sock.on("game_ended", async (d) => {
+          setStatus("ended");
+          setResult(d.result);
+          if (d.pgn) {
+            setFinalPgn(d.pgn);
+            try {
+              chess.loadPgn(d.pgn);
+              setFen(chess.fen());
+              setMoves(chess.history());
+            } catch {}
+          }
+          setWhite((p) => ({ ...p, isActive: false }));
+          setBlack((p) => ({ ...p, isActive: false }));
+          if (myColorRef.current) {
+            const iWon =
+              (d.result === "1-0" && myColorRef.current === "white") ||
+              (d.result === "0-1" && myColorRef.current === "black");
+            if (iWon) playRef.current("win");
+            else if (d.result === "0.5-0.5") playRef.current("draw");
+            else playRef.current("loss");
+          }
+        });
+        sock.on("draw_offered", ({ by_player_id }) => {
+          if (by_player_id !== myPlayerIdRef.current) setDrawOffered(true);
+        });
+        sock.on("spectator_count", ({ count }) => setSpectators(count));
+        sock.on("error", ({ message }) => {
+          console.error("[socket error]", message);
+          setStatus("ended");
+          setResult(message || "Server error");
+        });
+        sock.on("game_already_finished", ({ result: r, pgn: finishedPgn }) => {
+          setStatus("ended");
+          setResult(r);
+          if (finishedPgn) {
+            try {
+              chess.loadPgn(finishedPgn);
+              setFen(chess.fen());
+              setMoves(chess.history());
+              setFinalPgn(finishedPgn);
+            } catch {}
+          }
+        });
+
+        // ── No-show and nudge events ───────────────────────────────────────
+        sock.on(
+          "no_show_claimed",
+          ({ claimed_by, grace_ends_at, grace_minutes }) => {
+            setClaimPending(true);
+            setClaimGraceEndsAt(grace_ends_at);
+            setClaimGraceMinutes(grace_minutes);
+          },
+        );
+        sock.on("opponent_nudged", () => {
+          // Optional subtle confirmation
+        });
+        sock.on("claim_denied", ({ reason }) => {
+          console.warn("[claim] denied:", reason);
+        });
       } catch (err: any) {
-        // Catch any unhandled error in init() so status never stays stuck at "loading"
-        console.error('[init] unhandled error:', err?.message ?? err);
-        setStatus('waiting');
+        console.error("[init] unhandled error:", err?.message ?? err);
+        setStatus("waiting");
       }
     }
 
     init();
+
+    // Fetch round window for countdown
+    async function fetchRoundWindow() {
+      try {
+        const { data: game } = await supabase
+          .from("games")
+          .select("season, round, league")
+          .eq("id", gameId)
+          .single();
+        if (game?.season && game?.round) {
+          const { data: rw } = await supabase
+            .from("round_windows")
+            .select("*")
+            .eq("season", game.season)
+            .eq("round", game.round)
+            .eq("league", game.league)
+            .single();
+          if (rw) setRoundWindow(rw);
+        }
+      } catch {}
+    }
+    fetchRoundWindow();
 
     return () => {
       sock?.disconnect();
@@ -406,32 +498,45 @@ export default function GameRoomPage() {
     return true;
   }
 
-  // Helper: try a move locally (without sending to server) to get pendingFen
-  function tryMoveLocally(from: string, to: string, promotion = 'q'): string | null {
+  function tryMoveLocally(
+    from: string,
+    to: string,
+    promotion = "q",
+  ): string | null {
     const tempChess = new Chess(chess.fen());
     try {
       const result = tempChess.move({ from, to, promotion });
       return result ? tempChess.fen() : null;
-    } catch { return null; }
+    } catch {
+      return null;
+    }
   }
 
-  function emitMove(from: string, to: string, promotion = 'q') {
+  function emitMove(from: string, to: string, promotion = "q") {
     const sock = socketRef.current;
     const myPlayerId = myPlayerIdRef.current;
-    sock?.emit('make_move', { game_id: gameId, player_id: myPlayerId, move: { from, to, promotion } });
+    sock?.emit("make_move", {
+      game_id: gameId,
+      player_id: myPlayerId,
+      move: { from, to, promotion },
+    });
   }
 
   // TAP-TO-MOVE HANDLER
   function onSquareClick(square: any) {
     const myPlayerId = myPlayerIdRef.current;
-    if (status !== 'active' || !myPlayerId) return;
+    if (status !== "active" || !myPlayerId) return;
     const isMyTurn =
-      (chess.turn() === 'w' && myColorRef.current === 'white') ||
-      (chess.turn() === 'b' && myColorRef.current === 'black');
+      (chess.turn() === "w" && myColorRef.current === "white") ||
+      (chess.turn() === "b" && myColorRef.current === "black");
     if (!isMyTurn) return;
 
-    // If there's a pending move, clicking elsewhere cancels it
-    if (pendingMove) { setPendingMove(null); setPendingFen(null); setMoveFrom(null); return; }
+    if (pendingMove) {
+      setPendingMove(null);
+      setPendingFen(null);
+      setMoveFrom(null);
+      return;
+    }
 
     if (!moveFrom) {
       const hasOptions = getMoveOptions(square);
@@ -440,10 +545,14 @@ export default function GameRoomPage() {
     }
 
     const newFen = tryMoveLocally(moveFrom, square);
-    if (!newFen) { setMoveFrom(null); setOptionSquares({}); return; }
+    if (!newFen) {
+      setMoveFrom(null);
+      setOptionSquares({});
+      return;
+    }
 
     if (confirmMove) {
-      setPendingMove({ from: moveFrom, to: square, promotion: 'q' });
+      setPendingMove({ from: moveFrom, to: square, promotion: "q" });
       setPendingFen(newFen);
     } else {
       emitMove(moveFrom, square);
@@ -456,25 +565,49 @@ export default function GameRoomPage() {
     (src: string, tgt: string) => {
       const myPlayerId = myPlayerIdRef.current;
       const sock = socketRef.current;
-      if (status !== 'active' || !sock) return false;
+      if (status !== "active" || !sock) return false;
       const isMyTurn =
-        (chess.turn() === 'w' && myColorRef.current === 'white') ||
-        (chess.turn() === 'b' && myColorRef.current === 'black');
+        (chess.turn() === "w" && myColorRef.current === "white") ||
+        (chess.turn() === "b" && myColorRef.current === "black");
       if (!isMyTurn) return false;
 
       const newFen = tryMoveLocally(src, tgt);
       if (!newFen) return false;
 
       if (confirmMove) {
-        setPendingMove({ from: src, to: tgt, promotion: 'q' });
+        setPendingMove({ from: src, to: tgt, promotion: "q" });
         setPendingFen(newFen);
       } else {
         emitMove(src, tgt);
       }
       return true;
     },
-    [status, chess, gameId, confirmMove],  // eslint-disable-line react-hooks/exhaustive-deps
+    [status, chess, gameId, confirmMove],
   );
+
+  // ── Nudge opponent ─────────────────────────────────────────────────────
+  const nudgeOpponent = () => {
+    if (nudgeCooldown > 0) return;
+    socketRef.current?.emit("nudge_opponent", {
+      game_id: gameId,
+      player_id: myPlayerIdRef.current,
+    });
+    setNudgeCooldown(60);
+  };
+
+  // ── Claim no-show ──────────────────────────────────────────────────────
+  const claimNoShow = () => {
+    if (
+      !confirm(
+        "Claim opponent as no-show? They will have time to join before automatic forfeit.",
+      )
+    )
+      return;
+    socketRef.current?.emit("claim_no_show", {
+      game_id: gameId,
+      player_id: myPlayerIdRef.current,
+    });
+  };
 
   if (status === "unauthorized")
     return (
@@ -521,23 +654,31 @@ export default function GameRoomPage() {
         </div>
         <div className="flex items-center gap-2">
           {spectators > 0 && (
-            <a href={`/game/${gameId}/spectate`} target="_blank"
-               className="flex items-center gap-1.5 text-xs text-ink-400 hover:text-chalk transition-colors">
+            <a
+              href={`/game/${gameId}/spectate`}
+              target="_blank"
+              className="flex items-center gap-1.5 text-xs text-ink-400 hover:text-chalk transition-colors"
+            >
               <Eye size={12} /> {spectators} watching
             </a>
           )}
-          {/* Confirm move toggle — persisted to localStorage */}
           {!isSpectator && (
             <button
-              title={confirmMove ? 'Confirm move: ON (click to disable)' : 'Confirm move: OFF (click to enable)'}
+              title={
+                confirmMove
+                  ? "Confirm move: ON (click to disable)"
+                  : "Confirm move: OFF (click to enable)"
+              }
               onClick={() => {
                 const next = !confirmMove;
                 setConfirmMove(next);
-                localStorage.setItem('confirmMove', String(next));
-                // Cancel any pending move when toggling off
-                if (!next) { setPendingMove(null); setPendingFen(null); }
+                localStorage.setItem("confirmMove", String(next));
+                if (!next) {
+                  setPendingMove(null);
+                  setPendingFen(null);
+                }
               }}
-              className={`text-xs px-2 py-1 rounded border transition-colors ${confirmMove ? 'border-gold text-gold bg-gold/10' : 'border-ink-600 text-ink-400 hover:text-chalk'}`}
+              className={`text-xs px-2 py-1 rounded border transition-colors ${confirmMove ? "border-gold text-gold bg-gold/10" : "border-ink-600 text-ink-400 hover:text-chalk"}`}
             >
               ✓ Confirm
             </button>
@@ -545,6 +686,13 @@ export default function GameRoomPage() {
           <SoundToggle enabled={soundEnabled} onToggle={toggleSound} />
         </div>
       </div>
+
+      {/* ── Round window countdown ─────────────────────────────────────── */}
+      {roundWindow && (
+        <div className="mb-3">
+          <CountdownBadge window={roundWindow} />
+        </div>
+      )}
 
       {drawOffered && (
         <div className="mb-4 p-4 rounded-xl bg-gold/10 border border-gold/30 flex items-center justify-between">
@@ -577,7 +725,6 @@ export default function GameRoomPage() {
               : { ...white, color: "white" })}
           />
 
-          {/* UPDATED: touch-none wrapper stops scrolling during piece movement */}
           <div className="board-wrapper touch-none select-none relative">
             {typeof window !== "undefined" && (
               <Chessboard
@@ -588,18 +735,26 @@ export default function GameRoomPage() {
                 boardOrientation={orientation}
                 customDarkSquareStyle={{ backgroundColor: "#4a6080" }}
                 customLightSquareStyle={{ backgroundColor: "#b0bcce" }}
-                arePiecesDraggable={status === "active" && !isSpectator && !touchMode && !pendingMove}
+                arePiecesDraggable={
+                  status === "active" &&
+                  !isSpectator &&
+                  !touchMode &&
+                  !pendingMove
+                }
                 animationDuration={150}
               />
             )}
           </div>
 
-          {/* Confirm move overlay — appears after dragging/clicking when confirmMove is on */}
           {pendingMove && (
             <div className="flex gap-2 justify-center">
               <button
                 onClick={() => {
-                  emitMove(pendingMove.from, pendingMove.to, pendingMove.promotion);
+                  emitMove(
+                    pendingMove.from,
+                    pendingMove.to,
+                    pendingMove.promotion,
+                  );
                   setPendingMove(null);
                   setPendingFen(null);
                 }}
@@ -608,7 +763,10 @@ export default function GameRoomPage() {
                 ✓ Confirm Move
               </button>
               <button
-                onClick={() => { setPendingMove(null); setPendingFen(null); }}
+                onClick={() => {
+                  setPendingMove(null);
+                  setPendingFen(null);
+                }}
                 className="btn-ghost flex-1 text-sm gap-1.5"
               >
                 ✕ Cancel
@@ -659,9 +817,6 @@ export default function GameRoomPage() {
               </Link>
               <button
                 onClick={() => {
-                  // Use the PGN received from the server — it has correct headers
-                  // (player names, Elo, date, result). Falling back to chess.pgn()
-                  // would produce '[Result "*"]' and no player names.
                   const pgn = finalPgn ?? chess.pgn();
                   const blob = new Blob([pgn], { type: "text/plain" });
                   const a = document.createElement("a");
@@ -677,6 +832,65 @@ export default function GameRoomPage() {
           )}
         </div>
         <div className="space-y-4">
+          {/* ── Opponent Contact & Actions ────────────────────────────── */}
+          <div className="card p-4 space-y-3">
+            <div className="section-label mb-1">Opponent Contact</div>
+
+            {/* WhatsApp link */}
+            {(myColorRef.current === "white"
+              ? blackWhatsapp
+              : whiteWhatsapp) && (
+              <a
+                href={`https://wa.me/${(myColorRef.current === "white" ? blackWhatsapp : whiteWhatsapp)?.replace(/\+/g, "")}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-2 text-sm text-green-400 hover:text-green-300 py-1.5 px-3 rounded-lg bg-green-400/5 border border-green-400/10 w-full"
+              >
+                <MessageCircle size={14} />
+                Message on WhatsApp
+              </a>
+            )}
+
+            {/* Nudge button */}
+            {!isSpectator && status === "active" && (
+              <button
+                onClick={nudgeOpponent}
+                disabled={nudgeCooldown > 0}
+                className="btn-ghost w-full text-sm gap-2"
+              >
+                <Bell size={14} />
+                {nudgeCooldown > 0
+                  ? `Nudge again in ${nudgeCooldown}s`
+                  : "Nudge Opponent"}
+              </button>
+            )}
+
+            {/* No-show claim button */}
+            {!isSpectator && status === "active" && !claimPending && (
+              <button
+                onClick={claimNoShow}
+                className="btn-danger w-full text-sm gap-2"
+              >
+                <AlertTriangle size={14} />
+                Opponent No-Show
+              </button>
+            )}
+
+            {/* Grace period countdown */}
+            {claimPending && claimCountdown > 0 && (
+              <div className="p-3 rounded-lg bg-amber-900/20 border border-amber-700/50 text-center">
+                <ClockIcon
+                  size={14}
+                  className="inline-block mr-2 text-amber-400"
+                />
+                <span className="text-xs text-amber-300">
+                  Grace period: {Math.floor(claimCountdown / 60)}:
+                  {(claimCountdown % 60).toString().padStart(2, "0")}
+                </span>
+              </div>
+            )}
+          </div>
+
           <div className="card p-4">
             <div className="section-label mb-3">Move History</div>
             <MoveHistory moves={moves} />

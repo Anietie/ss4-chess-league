@@ -29,7 +29,7 @@ self.addEventListener('fetch', (event) => {
 
   // Never cache API routes or socket connections
   if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/socket.io/')) {
-    return; // Let browser handle normally
+    return;
   }
 
   // Cache-first for game review (so analysis works offline)
@@ -58,18 +58,26 @@ self.addEventListener('fetch', (event) => {
 // Push notifications
 self.addEventListener('push', (event) => {
   if (!event.data) return;
+
   let payload;
-  try { payload = event.data.json(); }
-  catch { payload = { title: 'SS4 Chess', body: event.data.text() }; }
+  try {
+    payload = event.data.json();
+  } catch {
+    const text = event.data.text();
+    payload = { title: 'SS4 Chess', body: text, data: { url: '/dashboard' } };
+  }
+
+  const { title, body, data, tag } = payload;
 
   event.waitUntil(
-    self.registration.showNotification(payload.title ?? 'SS4 Chess League', {
-      body: payload.body ?? '',
+    self.registration.showNotification(title || 'SS4 Chess League', {
+      body: body || '',
       icon: '/icons/icon-192.png',
       badge: '/icons/icon-192.png',
-      data: { url: payload.url ?? '/dashboard' },
-      tag: payload.tag ?? 'ss4-notification',
-      renotify: true,
+      data: { url: data?.url || '/dashboard' },
+      tag: tag || 'ss4-notification',
+      requireInteraction: true,
+      vibrate: [200, 100, 200],
     })
   );
 });

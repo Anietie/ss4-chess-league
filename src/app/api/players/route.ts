@@ -33,6 +33,11 @@ export async function POST(req: NextRequest) {
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
     return NextResponse.json({ error: 'Invalid email address.' }, { status: 400 });
 
+  // WhatsApp validation (required)
+  if (!whatsapp_number?.trim() || !/^(\+234|234|0)[7-9]\d{9}$/.test(whatsapp_number.replace(/[\s\-\(\)]/g, ''))) {
+    return NextResponse.json({ error: 'A valid Nigerian WhatsApp number is required (+234, 234, or 0 prefix).' }, { status: 400 });
+  }
+
   const supabase = adminDb();
 
   // ── Check if this email is already registered ─────────────────────────────
@@ -106,7 +111,7 @@ export async function POST(req: NextRequest) {
       email:                email.toLowerCase().trim(),
       chess_com_username:   chess_com_username?.trim() || null,
       lichess_username:     lichess_username?.trim() || null,
-      whatsapp_number:      whatsapp_number?.trim() || null,
+      whatsapp_number:      whatsapp_number.trim(),
       year_started_chess:   year_started_chess ? Number(year_started_chess) : null,
       joining_season:       season.id,
       home_league:          'unassigned',
@@ -171,7 +176,6 @@ export async function GET(req: NextRequest) {
     .order('ss4_rating', { ascending: false });
 
   if (league) query = query.eq('home_league', league);
-  // tier filter removed — tiers no longer exist
   if (search) query = query.ilike('full_name', `%${search}%`);
 
   const { data, error } = await query;

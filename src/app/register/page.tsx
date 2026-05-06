@@ -30,9 +30,9 @@ export default function RegisterPage() {
     email:              '',
     password:           '',
     confirm_password:   '',
+    whatsapp_number:    '',
     chess_com_username: '',
     lichess_username:   '',
-    whatsapp_number:    '',
     year_started_chess: '',
   });
 
@@ -64,6 +64,11 @@ export default function RegisterPage() {
     if (form.password !== form.confirm_password) {
       setError('Passwords do not match.'); return;
     }
+    // WhatsApp required validation
+    if (!form.whatsapp_number || !/^(\+234|234|0)[7-9]\d{9}$/.test(form.whatsapp_number.replace(/[\s\-\(\)]/g, ''))) {
+      setError('A valid Nigerian WhatsApp number is required (+234, 234, or 0 prefix).');
+      return;
+    }
 
     setLoading(true); setError('');
     try {
@@ -74,9 +79,9 @@ export default function RegisterPage() {
           full_name:          form.full_name,
           email:              form.email,
           password:           form.password,
+          whatsapp_number:    form.whatsapp_number.trim(),
           chess_com_username: form.chess_com_username || undefined,
           lichess_username:   form.lichess_username   || undefined,
-          whatsapp_number:    form.whatsapp_number    || undefined,
           year_started_chess: form.year_started_chess ? Number(form.year_started_chess) : undefined,
         }),
       });
@@ -290,6 +295,16 @@ export default function RegisterPage() {
             <input className="input" type="email" placeholder="your@email.com" value={form.email} onChange={set('email')} />
           </div>
           <div>
+            <label className="section-label block mb-1.5">
+              WhatsApp Number *
+              <span className="text-ink-500 normal-case"> (+234 format)</span>
+            </label>
+            <input className="input" placeholder="+234 812 345 6789" value={form.whatsapp_number} onChange={set('whatsapp_number')} />
+            {form.whatsapp_number && !/^(\+234|234|0)[7-9]\d{9}$/.test(form.whatsapp_number.replace(/[\s\-\(\)]/g, '')) && (
+              <p className="text-red-400 text-xs mt-1">Enter a valid Nigerian number (+234, 234, or 0 prefix)</p>
+            )}
+          </div>
+          <div>
             <label className="section-label block mb-1.5">Password *</label>
             <input className="input" type="password" placeholder="Min. 8 characters" value={form.password} onChange={set('password')} />
           </div>
@@ -312,10 +327,6 @@ export default function RegisterPage() {
                 <input className="input" placeholder="username" value={form.lichess_username} onChange={set('lichess_username')} />
               </div>
               <div>
-                <label className="section-label block mb-1.5">WhatsApp Number <span className="text-ink-500 normal-case">(for announcements)</span></label>
-                <input className="input" placeholder="+234..." value={form.whatsapp_number} onChange={set('whatsapp_number')} />
-              </div>
-              <div>
                 <label className="section-label block mb-1.5">Year You Started Playing Chess</label>
                 <input className="input" type="number" placeholder="e.g. 2020" min="1900" max="2030" value={form.year_started_chess} onChange={set('year_started_chess')} />
               </div>
@@ -326,8 +337,8 @@ export default function RegisterPage() {
         {/* Rating seed explainer */}
         <div className="card p-3 text-xs text-ink-400 space-y-0.5 bg-ink-900">
           <div className="text-chalk font-medium mb-1">How rating seeding works</div>
-          <div>• Chess.com / Lichess rapid rating &rarr; instant seed, skip calibration</div>
-          <div>• No platform account &rarr; 5 bot calibration games after registration</div>
+          <div>• Chess.com / Lichess rapid rating → instant seed, skip calibration</div>
+          <div>• No platform account → 5 bot calibration games after registration</div>
           <div>• All ratings shown as <span className="font-mono text-gold">1234?</span> until 5 SS4 league games played</div>
         </div>
 

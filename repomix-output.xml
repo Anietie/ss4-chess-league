@@ -69,16 +69,16 @@ src/app/admin/anti-cheat/page.tsx
 src/app/admin/draft/page.tsx
 src/app/admin/fixtures/page.tsx
 src/app/admin/layout.tsx
-src/app/admin/leagues/route.ts
 src/app/admin/page.tsx
 src/app/admin/players/page.tsx
 src/app/admin/season/page.tsx
 src/app/api/admin/anti-cheat/flagged-games/route.ts
 src/app/api/admin/anti-cheat/pending-violations/route.ts
 src/app/api/admin/anti-cheat/resolve/route.ts
-src/app/api/admin/league/route.ts
+src/app/api/admin/leagues/route.ts
 src/app/api/admin/players/[id]/route.ts
 src/app/api/admin/players/reactivate-all/route.ts
+src/app/api/admin/round-windows/route.ts
 src/app/api/admin/season-end/route.ts
 src/app/api/admin/season/route.ts
 src/app/api/admin/stats/route.ts
@@ -97,9 +97,11 @@ src/app/api/draft/route.ts
 src/app/api/fixtures/route.ts
 src/app/api/game-of-the-round/route.ts
 src/app/api/games/[id]/anticheat/route.ts
+src/app/api/games/[id]/claim-no-show/route.ts
 src/app/api/games/[id]/route.ts
 src/app/api/notifications/[id]/route.ts
 src/app/api/notifications/route.ts
+src/app/api/notifications/send/route.ts
 src/app/api/opening-repertoire/route.ts
 src/app/api/players/[id]/follow/route.ts
 src/app/api/players/[id]/followers/route.ts
@@ -107,6 +109,9 @@ src/app/api/players/[id]/route.ts
 src/app/api/players/queue/route.ts
 src/app/api/players/route.ts
 src/app/api/players/verify/route.ts
+src/app/api/push/send/route.ts
+src/app/api/push/subscribe/route.ts
+src/app/api/push/unsubscribe/route.ts
 src/app/api/ratings/update/route.ts
 src/app/api/season-status/route.ts
 src/app/api/spectate/[gameId]/chat/route.ts
@@ -143,7 +148,9 @@ src/components/profile/BadgeWall.tsx
 src/components/profile/RatingChart.tsx
 src/components/standings/RatingBadge.tsx
 src/components/standings/StandingsTable.tsx
+src/components/ui/CountdownBadge.tsx
 src/components/ui/index.tsx
+src/hooks/useCountdown.ts
 src/hooks/useSound.ts
 src/lib/anti-cheat.ts
 src/lib/chess-com-api.ts
@@ -152,6 +159,7 @@ src/lib/fixture-generator.ts
 src/lib/games-and-notifications.ts
 src/lib/glicko2.ts
 src/lib/opening-repertoire.ts
+src/lib/push-notifications.ts
 src/lib/scel-generator.ts
 src/lib/snake-draft.ts
 src/lib/supabase.ts
@@ -161,6 +169,7 @@ src/middleware.ts
 supabase/migration_v2.sql
 supabase/migration_v3_anticheat.sql
 supabase/migration_v4.sql
+supabase/migration_v5_play_windows.sql
 supabase/schema.sql
 tailwind.config.js
 tests/all.test.ts
@@ -170,6 +179,726 @@ vercel.json
 
 <files>
 This section contains the contents of the repository's files.
+
+<file path="src/app/api/admin/round-windows/route.ts">
+// src/app/api/admin/round-windows/route.ts
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+
+const adminSupabase = () =>
+  createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!
+  );
+
+export async function GET(req: NextRequest) {
+  if (req.headers.get('x-admin-secret') !== process.env.ADMIN_SECRET) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  const supabase = adminSupabase();
+  const season = new URL(req.url).searchParams.get('season') || '1';
+
+  const { data, error } = await supabase
+    .from('round_windows')
+    .select('*')
+    .eq('season', Number(season))
+    .order('round');
+
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  return NextResponse.json({ windows: data });
+}
+
+export async function POST(req: NextRequest) {
+  if (req.headers.get('x-admin-secret') !== process.env.ADMIN_SECRET) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  const { season, round, date, start_time, end_time, competition } = await req.json();
+  
+  if (!season || !round || !date || !start_time || !end_time) {
+    return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
+  }
+
+  const supabase = adminSupabase();
+
+  // Build timestamps in WAT (UTC+1)
+  const windowStart = new Date(`${date}T${start_time}:00+01:00`);
+  const windowEnd = new Date(`${date}T${end_time}:00+01:00`);
+
+  if (windowEnd <= windowStart) {
+    return NextResponse.json({ error: 'End time must be after start time' }, { status: 400 });
+  }
+
+  // Get all active leagues for this season
+  const { data: leagues } = await supabase
+    .from('players')
+    .select('home_league')
+    .eq('is_active', true)
+    .neq('home_league', 'unassigned')
+    .neq('home_league', 'calibration');
+
+  const uniqueLeagues = [...new Set((leagues ?? []).map(l => l.home_league).filter(l => /^league_\d+$/.test(l)))];
+
+  const windows = uniqueLeagues.map(league => ({
+    season,
+    competition: competition || 'league',
+    round,
+    league,
+    window_start: windowStart.toISOString(),
+    window_end: windowEnd.toISOString(),
+    status: 'scheduled',
+  }));
+
+  if (windows.length === 0) {
+    return NextResponse.json({ error: 'No active leagues found' }, { status: 400 });
+  }
+
+  const { error } = await supabase
+    .from('round_windows')
+    .upsert(windows, { onConflict: 'season,competition,round,league' });
+
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+  return NextResponse.json({ success: true, leagues_updated: windows.length });
+}
+</file>
+
+<file path="src/app/api/games/[id]/claim-no-show/route.ts">
+// src/app/api/games/[id]/claim-no-show/route.ts
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+
+const adminSupabase = () =>
+  createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!
+  );
+
+export async function POST(
+  req: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const { id: gameId } = await params;
+  const { player_id } = await req.json();
+
+  if (!player_id) {
+    return NextResponse.json({ error: 'player_id required' }, { status: 400 });
+  }
+
+  const supabase = adminSupabase();
+
+  // Fetch game
+  const { data: game, error: gameError } = await supabase
+    .from('games')
+    .select('id, white_player_id, black_player_id, round, league, season, result')
+    .eq('id', gameId)
+    .single();
+
+  if (gameError || !game) {
+    return NextResponse.json({ error: 'Game not found' }, { status: 404 });
+  }
+
+  if (game.result !== '*') {
+    return NextResponse.json({ error: 'Game already has a result' }, { status: 400 });
+  }
+
+  // Verify player is in this game
+  if (player_id !== game.white_player_id && player_id !== game.black_player_id) {
+    return NextResponse.json({ error: 'Not your game' }, { status: 403 });
+  }
+
+  const opponentId = player_id === game.white_player_id ? game.black_player_id : game.white_player_id;
+
+  // Check for existing claim
+  const { data: existingClaim } = await supabase
+    .from('no_show_claims')
+    .select('id')
+    .eq('game_id', gameId)
+    .is('resolved_at', null)
+    .single();
+
+  if (existingClaim) {
+    return NextResponse.json({ error: 'A no-show claim is already pending' }, { status: 409 });
+  }
+
+  // Find the round window
+  const { data: roundWindow } = await supabase
+    .from('round_windows')
+    .select('window_start, window_end')
+    .eq('season', game.season)
+    .eq('round', game.round)
+    .eq('league', game.league)
+    .single();
+
+  if (!roundWindow) {
+    return NextResponse.json({ error: 'No round window found for this game' }, { status: 404 });
+  }
+
+  const now = new Date();
+  const windowEnd = new Date(roundWindow.window_end);
+
+  // Calculate grace period
+  const maxGraceMs = 15 * 60 * 1000; // 15 minutes
+  const remainingWindowMs = windowEnd.getTime() - now.getTime();
+  const gracePeriodMs = Math.min(maxGraceMs, Math.max(60 * 1000, remainingWindowMs));
+  const graceEndsAt = new Date(now.getTime() + gracePeriodMs);
+  const graceMinutes = Math.ceil(gracePeriodMs / (60 * 1000));
+
+  // Create claim
+  const { data: claim, error: claimError } = await supabase
+    .from('no_show_claims')
+    .insert({
+      game_id: gameId,
+      claimed_by: player_id,
+      claimed_against: opponentId,
+      claimed_at: now.toISOString(),
+      grace_ends_at: graceEndsAt.toISOString(),
+    })
+    .select('id')
+    .single();
+
+  if (claimError) {
+    return NextResponse.json({ error: claimError.message }, { status: 500 });
+  }
+
+  // Notify opponent
+  await supabase.from('notifications').insert({
+    player_id: opponentId,
+    type: 'no_show_claimed',
+    title: '⚠️ No-Show Claimed Against You',
+    message: `Your opponent has claimed you as a no-show. You have ${graceMinutes} minutes to join the game before automatic forfeit.`,
+    game_id: gameId,
+  });
+
+  // Send push notification
+  try {
+    const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
+    await fetch(`${appUrl}/api/push/send`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-internal-secret': process.env.INTERNAL_API_SECRET || '',
+      },
+      body: JSON.stringify({
+        player_ids: [opponentId],
+        title: '⚠️ No-Show Claimed',
+        body: `Your opponent claimed you as a no-show. Join within ${graceMinutes} minutes.`,
+        url: `/play/${gameId}`,
+        tag: `no-show-${gameId}`,
+      }),
+    });
+  } catch {}
+
+  return NextResponse.json({
+    success: true,
+    claim_id: claim.id,
+    grace_ends_at: graceEndsAt.toISOString(),
+    grace_minutes: graceMinutes,
+  });
+}
+
+export async function DELETE(
+  req: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const { id: gameId } = await params;
+  const supabase = adminSupabase();
+
+  const { data: claim } = await supabase
+    .from('no_show_claims')
+    .select('id, claimed_against')
+    .eq('game_id', gameId)
+    .is('resolved_at', null)
+    .single();
+
+  if (claim) {
+    await supabase
+      .from('no_show_claims')
+      .update({ resolved_at: new Date().toISOString(), resolution: 'opponent_joined' })
+      .eq('id', claim.id);
+
+    // Notify the claimed-against player that the claim is resolved
+    await supabase.from('notifications').insert({
+      player_id: claim.claimed_against,
+      type: 'no_show_resolved',
+      title: '✅ No-Show Claim Resolved',
+      message: 'The no-show claim against you has been cancelled because you joined the game.',
+      game_id: gameId,
+    });
+  }
+
+  return NextResponse.json({ success: true });
+}
+</file>
+
+<file path="src/app/api/notifications/send/route.ts">
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+
+const adminSupabase = () =>
+  createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!
+  );
+
+export async function POST(req: NextRequest) {
+  if (req.headers.get('x-internal-secret') !== process.env.INTERNAL_API_SECRET) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  const { player_id, type, title, message, game_id } = await req.json();
+
+  if (!player_id || !title || !message) {
+    return NextResponse.json({ error: 'player_id, title, and message required' }, { status: 400 });
+  }
+
+  const supabase = adminSupabase();
+
+  const { error } = await supabase.from('notifications').insert({
+    player_id,
+    type: type || 'admin_action',
+    title,
+    message,
+    game_id: game_id || null,
+  });
+
+  if (error) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+
+  return NextResponse.json({ success: true });
+}
+</file>
+
+<file path="src/app/api/push/send/route.ts">
+
+</file>
+
+<file path="src/app/api/push/subscribe/route.ts">
+// src/app/api/push/subscribe/route.ts
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+
+const adminSupabase = () =>
+  createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!
+  );
+
+export async function POST(req: NextRequest) {
+  const { player_id, endpoint, p256dh, auth } = await req.json();
+
+  if (!player_id || !endpoint || !p256dh || !auth) {
+    return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
+  }
+
+  const supabase = adminSupabase();
+
+  const { error } = await supabase
+    .from('push_subscriptions')
+    .upsert(
+      { player_id, endpoint, p256dh, auth },
+      { onConflict: 'player_id,endpoint' }
+    );
+
+  if (error) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+
+  return NextResponse.json({ success: true });
+}
+</file>
+
+<file path="src/app/api/push/unsubscribe/route.ts">
+
+</file>
+
+<file path="src/components/ui/CountdownBadge.tsx">
+// src/components/ui/CountdownBadge.tsx
+'use client';
+import { useCountdown } from '@/hooks/useCountdown';
+import { Clock, Play, AlertTriangle, XCircle } from 'lucide-react';
+
+interface Props {
+  window: { window_start: string; window_end: string; status: string } | null | undefined;
+  roundNumber?: number;
+  className?: string;
+  compact?: boolean;
+}
+
+export function CountdownBadge({ window, roundNumber, className = '', compact = false }: Props) {
+  const countdown = useCountdown(window);
+
+  if (countdown.status === 'none') return null;
+
+  const config = {
+    upcoming: {
+      icon: <Clock size={compact ? 11 : 14} />,
+      bg: 'bg-blue-900/30 border-blue-700/50',
+      text: 'text-blue-300',
+    },
+    open: {
+      icon: <Play size={compact ? 11 : 14} className="animate-pulse" />,
+      bg: 'bg-green-900/30 border-green-700/50',
+      text: 'text-green-300',
+    },
+    closing_soon: {
+      icon: <AlertTriangle size={compact ? 11 : 14} />,
+      bg: 'bg-amber-900/30 border-amber-700/50',
+      text: 'text-amber-300',
+    },
+    closed: {
+      icon: <XCircle size={compact ? 11 : 14} />,
+      bg: 'bg-red-900/30 border-red-700/50',
+      text: 'text-red-300',
+    },
+  }[countdown.status];
+
+  return (
+    <div className={`flex items-center gap-2 px-3 py-2 rounded-lg border ${config.bg} ${config.text} text-xs font-medium ${className}`}>
+      {config.icon}
+      <span>
+        {roundNumber ? `R${roundNumber}: ` : ''}
+        {countdown.label}
+      </span>
+    </div>
+  );
+}
+</file>
+
+<file path="src/hooks/useCountdown.ts">
+// src/hooks/useCountdown.ts
+'use client';
+import { useEffect, useState, useCallback } from 'react';
+
+export interface CountdownState {
+  status: 'upcoming' | 'open' | 'closing_soon' | 'closed' | 'none';
+  label: string;
+  timeLeft: string;
+  isOpen: boolean;
+  isClosed: boolean;
+  windowStart: Date | null;
+  windowEnd: Date | null;
+  secondsToStart: number;
+  secondsToEnd: number;
+}
+
+interface RoundWindow {
+  window_start: string;
+  window_end: string;
+  status: string;
+}
+
+export function useCountdown(window: RoundWindow | null | undefined): CountdownState {
+  const [now, setNow] = useState(() => new Date());
+
+  useEffect(() => {
+    const interval = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(interval);
+  }, []);
+
+  if (!window || !window.window_start || !window.window_end) {
+    return {
+      status: 'none',
+      label: 'No window scheduled',
+      timeLeft: '--:--:--',
+      isOpen: false,
+      isClosed: false,
+      windowStart: null,
+      windowEnd: null,
+      secondsToStart: 0,
+      secondsToEnd: 0,
+    };
+  }
+
+  const start = new Date(window.window_start);
+  const end = new Date(window.window_end);
+  const diffToStart = start.getTime() - now.getTime();
+  const diffToEnd = end.getTime() - now.getTime();
+
+  // Already closed by status
+  if (window.status === 'closed') {
+    return {
+      status: 'closed',
+      label: 'Window closed',
+      timeLeft: '00:00:00',
+      isOpen: false,
+      isClosed: true,
+      windowStart: start,
+      windowEnd: end,
+      secondsToStart: 0,
+      secondsToEnd: 0,
+    };
+  }
+
+  if (diffToStart > 0) {
+    // Window hasn't started yet
+    const days = Math.floor(diffToStart / (1000 * 60 * 60 * 24));
+    const hours = Math.floor((diffToStart % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+    const minutes = Math.floor((diffToStart % (1000 * 60 * 60)) / (1000 * 60));
+    const seconds = Math.floor((diffToStart % (1000 * 60)) / 1000);
+
+    let label: string;
+    if (days > 0) {
+      label = `Starts in ${days}d ${hours}h`;
+    } else if (hours > 0) {
+      label = `Starts in ${hours}h ${minutes}m`;
+    } else if (minutes > 0) {
+      label = `Starts in ${minutes}m ${seconds}s`;
+    } else {
+      label = `Starts in ${seconds}s`;
+    }
+
+    return {
+      status: 'upcoming',
+      label,
+      timeLeft: `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`,
+      isOpen: false,
+      isClosed: false,
+      windowStart: start,
+      windowEnd: end,
+      secondsToStart: Math.floor(diffToStart / 1000),
+      secondsToEnd: Math.floor(diffToEnd / 1000),
+    };
+  }
+
+  if (diffToEnd > 0) {
+    // Window is open
+    const minutesLeft = Math.floor(diffToEnd / (1000 * 60));
+    const seconds = Math.floor((diffToEnd % (1000 * 60)) / 1000);
+    const closingSoon = diffToEnd < 15 * 60 * 1000; // 15 minutes
+
+    let label: string;
+    if (closingSoon) {
+      label = `Closes in ${minutesLeft}:${String(seconds).padStart(2, '0')}`;
+    } else {
+      label = 'Window open — join now!';
+    }
+
+    return {
+      status: closingSoon ? 'closing_soon' : 'open',
+      label,
+      timeLeft: `${String(Math.floor(minutesLeft / 60)).padStart(2, '0')}:${String(minutesLeft % 60).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`,
+      isOpen: true,
+      isClosed: false,
+      windowStart: start,
+      windowEnd: end,
+      secondsToStart: 0,
+      secondsToEnd: Math.floor(diffToEnd / 1000),
+    };
+  }
+
+  // Window ended
+  return {
+    status: 'closed',
+    label: 'Window closed',
+    timeLeft: '00:00:00',
+    isOpen: false,
+    isClosed: true,
+    windowStart: start,
+    windowEnd: end,
+    secondsToStart: 0,
+    secondsToEnd: 0,
+  };
+}
+</file>
+
+<file path="src/lib/push-notifications.ts">
+const VAPID_PUBLIC_KEY = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY || "";
+
+export async function subscribeToPush(
+  playerId: string,
+): Promise<PushSubscription | null> {
+  if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
+    console.warn("[push] Push notifications not supported");
+    return null;
+  }
+
+  try {
+    const registration = await navigator.serviceWorker.ready;
+
+    const existingSubscription =
+      await registration.pushManager.getSubscription();
+    if (existingSubscription) {
+      await saveSubscription(playerId, existingSubscription);
+      return existingSubscription;
+    }
+
+    if (!VAPID_PUBLIC_KEY) {
+      console.error("[push] VAPID_PUBLIC_KEY not configured");
+      return null;
+    }
+
+    const subscription = await registration.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(
+        VAPID_PUBLIC_KEY,
+      ) as BufferSource,
+    });
+
+    await saveSubscription(playerId, subscription);
+    return subscription;
+  } catch (error) {
+    console.error("[push] Subscription failed:", error);
+    return null;
+  }
+}
+
+export async function unsubscribeFromPush(playerId: string): Promise<void> {
+  try {
+    const registration = await navigator.serviceWorker.ready;
+    const subscription = await registration.pushManager.getSubscription();
+    if (subscription) {
+      await subscription.unsubscribe();
+      await fetch("/api/push/unsubscribe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          player_id: playerId,
+          endpoint: subscription.endpoint,
+        }),
+      });
+    }
+  } catch (error) {
+    console.error("[push] Unsubscribe failed:", error);
+  }
+}
+
+export async function checkNotificationPermission(): Promise<NotificationPermission> {
+  if (!("Notification" in window)) return "denied";
+
+  let permission = Notification.permission;
+
+  if (permission === "default") {
+    permission = await Notification.requestPermission();
+  }
+
+  return permission;
+}
+
+async function saveSubscription(
+  playerId: string,
+  subscription: PushSubscription,
+): Promise<void> {
+  const key = subscription.getKey("p256dh");
+  const auth = subscription.getKey("auth");
+
+  if (!key || !auth) return;
+
+  try {
+    await fetch("/api/push/subscribe", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        player_id: playerId,
+        endpoint: subscription.endpoint,
+        p256dh: btoa(String.fromCharCode(...new Uint8Array(key))),
+        auth: btoa(String.fromCharCode(...new Uint8Array(auth))),
+      }),
+    });
+  } catch (error) {
+    console.error("[push] Failed to save subscription:", error);
+  }
+}
+
+function urlBase64ToUint8Array(base64String: string): Uint8Array {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const rawData = atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; ++i) {
+    outputArray[i] = rawData.charCodeAt(i);
+  }
+  return outputArray;
+}
+</file>
+
+<file path="supabase/migration_v5_play_windows.sql">
+-- migration_v5_play_windows.sql
+-- Run in Supabase SQL Editor
+
+-- ── Round Windows ───────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS round_windows (
+  id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  season          INTEGER NOT NULL REFERENCES seasons(id),
+  competition     TEXT NOT NULL CHECK (competition IN ('league', 'scel', 'champions_league', 'continental_shield', 'blitz', 'newcomer_shield')),
+  round           INTEGER NOT NULL,
+  league          TEXT, -- NULL for non-league competitions
+  window_start    TIMESTAMPTZ NOT NULL,
+  window_end      TIMESTAMPTZ NOT NULL,
+  status          TEXT NOT NULL DEFAULT 'scheduled' CHECK (status IN ('scheduled', 'open', 'closed')),
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(season, competition, round, league)
+);
+
+CREATE INDEX IF NOT EXISTS idx_round_windows_status ON round_windows(status, window_start);
+
+-- ── No-Show Claims ──────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS no_show_claims (
+  id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  game_id         UUID NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+  claimed_by      UUID NOT NULL REFERENCES players(id),
+  claimed_against UUID NOT NULL REFERENCES players(id),
+  claimed_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  grace_ends_at   TIMESTAMPTZ NOT NULL,
+  resolved_at     TIMESTAMPTZ,
+  resolution      TEXT CHECK (resolution IN ('auto_forfeit', 'opponent_joined', 'cancelled', 'manual')),
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_no_show_claims_game ON no_show_claims(game_id);
+CREATE INDEX IF NOT EXISTS idx_no_show_claims_pending ON no_show_claims(resolved_at) WHERE resolved_at IS NULL;
+
+-- ── WhatsApp Notifications Log ─────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS whatsapp_logs (
+  id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  player_id       UUID REFERENCES players(id),
+  phone_number    TEXT NOT NULL,
+  template_name   TEXT NOT NULL,
+  message_body    TEXT NOT NULL,
+  status          TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'sent', 'failed', 'delivered', 'read')),
+  meta_message_id TEXT,
+  error_message   TEXT,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_whatsapp_logs_player ON whatsapp_logs(player_id);
+CREATE INDEX IF NOT EXISTS idx_whatsapp_logs_status ON whatsapp_logs(status);
+
+-- ── Extend notifications table for nudge ──────────────────────────────────
+ALTER TABLE notifications DROP CONSTRAINT IF EXISTS notifications_type_check;
+ALTER TABLE notifications ADD CONSTRAINT notifications_type_check
+  CHECK (type IN (
+    'fixture_scheduled','round_start','deadline_reminder',
+    'result_recorded','cl_qualified','cup_qualified',
+    'badge_awarded','suspension','rating_update',
+    'casual_challenge','casual_accepted','casual_declined',
+    'draft_result','admin_action','nudge',
+    'no_show_claimed','no_show_resolved','round_starting_soon',
+    'window_open','window_closed','season_starting'
+  ));
+
+-- ── Ensure whatsapp_number is NOT NULL for active players ─────────────────
+-- (We'll enforce this in the registration API, but add a partial index for queries)
+CREATE INDEX IF NOT EXISTS idx_players_whatsapp ON players(whatsapp_number) 
+  WHERE is_active = TRUE AND whatsapp_number IS NOT NULL;
+
+-- ── Real-time enable the new tables ───────────────────────────────────────
+ALTER PUBLICATION supabase_realtime ADD TABLE round_windows;
+ALTER PUBLICATION supabase_realtime ADD TABLE no_show_claims;
+
+-- Add to migration_v5_play_windows.sql or run separately
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  player_id UUID REFERENCES players(id) ON DELETE CASCADE,
+  endpoint TEXT NOT NULL,
+  p256dh TEXT NOT NULL,
+  auth TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(player_id, endpoint)
+);
+</file>
 
 <file path=".gitignore">
 .vercel
@@ -276,7 +1005,7 @@ self.addEventListener('fetch', (event) => {
 
   // Never cache API routes or socket connections
   if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/socket.io/')) {
-    return; // Let browser handle normally
+    return;
   }
 
   // Cache-first for game review (so analysis works offline)
@@ -305,18 +1034,26 @@ self.addEventListener('fetch', (event) => {
 // Push notifications
 self.addEventListener('push', (event) => {
   if (!event.data) return;
+
   let payload;
-  try { payload = event.data.json(); }
-  catch { payload = { title: 'SS4 Chess', body: event.data.text() }; }
+  try {
+    payload = event.data.json();
+  } catch {
+    const text = event.data.text();
+    payload = { title: 'SS4 Chess', body: text, data: { url: '/dashboard' } };
+  }
+
+  const { title, body, data, tag } = payload;
 
   event.waitUntil(
-    self.registration.showNotification(payload.title ?? 'SS4 Chess League', {
-      body: payload.body ?? '',
+    self.registration.showNotification(title || 'SS4 Chess League', {
+      body: body || '',
       icon: '/icons/icon-192.png',
       badge: '/icons/icon-192.png',
-      data: { url: payload.url ?? '/dashboard' },
-      tag: payload.tag ?? 'ss4-notification',
-      renotify: true,
+      data: { url: data?.url || '/dashboard' },
+      tag: tag || 'ss4-notification',
+      requireInteraction: true,
+      vibrate: [200, 100, 200],
     })
   );
 });
@@ -935,268 +1672,6 @@ export default function AdminDraftPage() {
 }
 </file>
 
-<file path="src/app/admin/fixtures/page.tsx">
-'use client';
-
-import { leagueName } from '@/lib/utils';
-import { Calendar, Loader2, CheckCircle, Swords } from 'lucide-react';
-import { useEffect, useState } from 'react';
-
-interface LeagueInfo {
-  league: string;
-  playerCount: number;
-  hasFixtures: boolean;
-}
-
-export default function AdminFixturesPage() {
-  const [leagues, setLeagues] = useState<LeagueInfo[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [generating, setGenerating] = useState<string | null>(null);
-  const [scelGenerating, setScelGenerating] = useState(false);
-  const [error, setError] = useState('');
-  const [success, setSuccess] = useState('');
-  const [season, setSeason] = useState(1);
-  const [startDate, setStartDate] = useState('');
-  const [scelData, setScelData] = useState<any>(null);
-
-  useEffect(() => {
-    fetchCurrentSeason();
-    fetchLeagues();
-  }, []);
-
-  async function fetchCurrentSeason() {
-    try {
-      const res = await fetch('/api/admin/season?action=current');
-      const data = await res.json();
-      if (data.season?.id) setSeason(data.season.id);
-    } catch {}
-  }
-
-  async function fetchLeagues() {
-    try {
-      const res = await fetch('/api/admin/leagues');
-      const data = await res.json();
-      setLeagues(data.leagues ?? []);
-    } catch (e: any) {
-      setError(e.message);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function generateLeagueFixtures(league: string) {
-    if (!startDate) {
-      setError('Please set a start date first.');
-      return;
-    }
-    setGenerating(league);
-    setError('');
-    setSuccess('');
-    try {
-      const res = await fetch('/api/fixtures', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-admin-secret': 'ss4-admin-2026-abc',
-        },
-        body: JSON.stringify({ season, league, start_date: startDate, time_control: '600+5' }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
-      setSuccess(`Fixtures generated for ${leagueName(league)}: ${data.fixtures_created} games, ${data.rounds} rounds.`);
-      fetchLeagues();
-    } catch (e: any) {
-      setError(e.message);
-    } finally {
-      setGenerating(null);
-    }
-  }
-
-  async function generateAllFixtures() {
-    if (!startDate) {
-      setError('Please set a start date first.');
-      return;
-    }
-    if (!confirm(`Generate fixtures for ALL leagues starting ${startDate}?`)) return;
-    setError('');
-    setSuccess('');
-    let generated = 0;
-    for (const l of leagues.filter(l => !l.hasFixtures)) {
-      setGenerating(l.league);
-      try {
-        const res = await fetch('/api/fixtures', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-admin-secret': 'ss4-admin-2026-abc',
-          },
-          body: JSON.stringify({ season, league: l.league, start_date: startDate, time_control: '600+5' }),
-        });
-        if (res.ok) generated++;
-      } catch {}
-    }
-    setGenerating(null);
-    setSuccess(`Fixtures generated for ${generated} leagues.`);
-    fetchLeagues();
-  }
-
-  async function generateScelBracket() {
-    setScelGenerating(true);
-    setError('');
-    setSuccess('');
-    try {
-      const res = await fetch('/api/competitions/scel', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-admin-secret': 'ss4-admin-2026-abc',
-        },
-        body: JSON.stringify({ season, action: 'generate_bracket' }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
-      setScelData(data);
-      setSuccess(`SCEL bracket generated! ${data.participants} players, ${data.bracket_size}-player bracket, ${data.byes_awarded} byes awarded.`);
-    } catch (e: any) {
-      setError(e.message);
-    } finally {
-      setScelGenerating(false);
-    }
-  }
-
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <Loader2 className="animate-spin text-gold" size={28} />
-      </div>
-    );
-  }
-
-  const allHaveFixtures = leagues.every(l => l.hasFixtures);
-
-  return (
-    <div className="space-y-8 page-enter">
-      <div>
-        <h1 className="font-display text-2xl font-bold text-chalk">Fixtures & SCEL</h1>
-        <p className="text-ink-400 text-sm mt-1">Generate league fixtures and SCEL bracket</p>
-      </div>
-
-      {/* Error / Success */}
-      {error && (
-        <div className="card p-4 bg-red-900/20 border-red-700/50 text-red-300 text-sm">{error}</div>
-      )}
-      {success && (
-        <div className="card p-4 bg-green-900/20 border-green-700/50 text-green-300 text-sm flex items-center gap-2">
-          <CheckCircle size={14} /> {success}
-        </div>
-      )}
-
-      {/* Start date */}
-      <div className="card p-5">
-        <label className="text-xs text-ink-400 block mb-2">Season Start Date</label>
-        <div className="flex gap-3 items-center">
-          <input
-            type="date"
-            value={startDate}
-            onChange={e => setStartDate(e.target.value)}
-            className="input w-48"
-          />
-          <button
-            onClick={generateAllFixtures}
-            disabled={!startDate || allHaveFixtures || generating !== null}
-            className="btn-gold gap-2"
-          >
-            <Calendar size={14} />
-            Generate All League Fixtures
-          </button>
-        </div>
-      </div>
-
-      {/* League fixtures */}
-      <div className="card overflow-hidden">
-        <div className="px-4 py-3 border-b border-ink-700 bg-ink-900">
-          <div className="text-sm font-semibold text-chalk">League Fixtures</div>
-        </div>
-        <div className="divide-y divide-ink-700">
-          {leagues.map(l => (
-            <div key={l.league} className="flex items-center justify-between px-4 py-3">
-              <div>
-                <div className="text-sm text-chalk">{leagueName(l.league)}</div>
-                <div className="text-xs text-ink-400">{l.playerCount} players</div>
-              </div>
-              {l.hasFixtures ? (
-                <span className="flex items-center gap-1.5 text-xs text-green-400">
-                  <CheckCircle size={12} /> Generated
-                </span>
-              ) : (
-                <button
-                  onClick={() => generateLeagueFixtures(l.league)}
-                  disabled={!startDate || generating === l.league}
-                  className="btn-ghost btn-sm gap-1.5"
-                >
-                  {generating === l.league ? (
-                    <Loader2 size={12} className="animate-spin" />
-                  ) : (
-                    <Calendar size={12} />
-                  )}
-                  Generate
-                </button>
-              )}
-            </div>
-          ))}
-          {leagues.length === 0 && (
-            <div className="px-4 py-8 text-center text-ink-400 text-sm">
-              No leagues formed yet. Run the draft first.
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* SCEL Bracket */}
-      <div className="card p-5 space-y-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <div className="text-sm font-semibold text-chalk">SCEL Bracket</div>
-            <div className="text-xs text-ink-400 mt-0.5">
-              SS4 Chess Elimination League — single elimination bracket
-            </div>
-          </div>
-          <button
-            onClick={generateScelBracket}
-            disabled={scelGenerating}
-            className="btn-gold gap-2"
-          >
-            {scelGenerating ? <Loader2 size={14} className="animate-spin" /> : <Swords size={14} />}
-            Generate SCEL Bracket
-          </button>
-        </div>
-
-        {scelData && (
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <div className="bg-ink-800 rounded-lg p-3 text-center">
-              <div className="text-xs text-ink-400">Participants</div>
-              <div className="text-lg font-bold text-chalk">{scelData.participants}</div>
-            </div>
-            <div className="bg-ink-800 rounded-lg p-3 text-center">
-              <div className="text-xs text-ink-400">Bracket Size</div>
-              <div className="text-lg font-bold text-chalk">{scelData.bracket_size}</div>
-            </div>
-            <div className="bg-ink-800 rounded-lg p-3 text-center">
-              <div className="text-xs text-ink-400">Rounds</div>
-              <div className="text-lg font-bold text-chalk">{scelData.total_rounds}</div>
-            </div>
-            <div className="bg-ink-800 rounded-lg p-3 text-center">
-              <div className="text-xs text-ink-400">Byes</div>
-              <div className="text-lg font-bold text-chalk">{scelData.byes_awarded}</div>
-            </div>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-</file>
-
 <file path="src/app/admin/layout.tsx">
 'use client';
 
@@ -1338,59 +1813,6 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
       </div>
     </div>
   );
-}
-</file>
-
-<file path="src/app/admin/leagues/route.ts">
-import { createClient } from '@supabase/supabase-js';
-import { NextRequest, NextResponse } from 'next/server';
-
-const adminSupabase = () =>
-  createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!
-  );
-
-export async function GET(req: NextRequest) {
-  if (req.headers.get('x-admin-secret') !== process.env.ADMIN_SECRET) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
-
-  const supabase = adminSupabase();
-  const season = new URL(req.url).searchParams.get('season') ?? '1';
-
-  // Get players grouped by league
-  const { data: players } = await supabase
-    .from('players')
-    .select('home_league')
-    .eq('is_active', true)
-    .neq('home_league', 'unassigned')
-    .neq('home_league', 'calibration');
-
-  const leagueMap = new Map<string, number>();
-  for (const p of players ?? []) {
-    leagueMap.set(p.home_league, (leagueMap.get(p.home_league) ?? 0) + 1);
-  }
-
-  // Check which leagues already have fixtures
-  const { data: games } = await supabase
-    .from('games')
-    .select('league')
-    .eq('season', Number(season))
-    .eq('competition_phase', 'league_phase');
-
-  const leaguesWithFixtures = new Set((games ?? []).map(g => g.league));
-
-  const leagues = Array.from(leagueMap.entries())
-    .filter(([league]) => /^league_\d+$/.test(league))
-    .map(([league, count]) => ({
-      league,
-      playerCount: count,
-      hasFixtures: leaguesWithFixtures.has(league),
-    }))
-    .sort((a, b) => a.league.localeCompare(b.league));
-
-  return NextResponse.json({ leagues });
 }
 </file>
 
@@ -1627,308 +2049,6 @@ export default function AdminPlayersPage() {
 }
 </file>
 
-<file path="src/app/admin/season/page.tsx">
-'use client';
-
-import { Loader2, CheckCircle, ArrowRight, Trophy, Users } from 'lucide-react';
-import { useEffect, useState } from 'react';
-
-interface SeasonInfo {
-  id: number;
-  name: string;
-  status: string;
-  start_date: string;
-  end_date: string | null;
-}
-
-const STATUS_FLOW = [
-  { status: 'registration', label: 'Registration', icon: '📝' },
-  { status: 'draft', label: 'Draft', icon: '🎯' },
-  { status: 'active', label: 'Active (League + SCEL)', icon: '⚔️' },
-  { status: 'champions_league', label: 'Champions League', icon: '👑' },
-  { status: 'complete', label: 'Complete', icon: '🏆' },
-];
-
-export default function AdminSeasonPage() {
-  const [season, setSeason] = useState<SeasonInfo | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [advancing, setAdvancing] = useState(false);
-  const [endingLeague, setEndingLeague] = useState(false);
-  const [clAction, setClAction] = useState('');
-  const [clWinnerId, setClWinnerId] = useState('');
-  const [clRunnerUpId, setClRunnerUpId] = useState('');
-  const [error, setError] = useState('');
-  const [success, setSuccess] = useState('');
-
-  useEffect(() => {
-    fetchSeason();
-  }, []);
-
-  async function fetchSeason() {
-    try {
-      const res = await fetch('/api/admin/season?action=current');
-      const data = await res.json();
-      setSeason(data.season);
-    } catch (e: any) {
-      setError(e.message);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function advanceStatus() {
-    if (!confirm(`Advance season from "${season?.status}" to the next stage?`)) return;
-    setAdvancing(true);
-    setError('');
-    try {
-      const res = await fetch('/api/admin/season', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-admin-secret': 'ss4-admin-2026-abc',
-        },
-        body: JSON.stringify({ action: 'advance_status', season: season?.id }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
-      setSuccess(`Season advanced: ${data.previous_status} → ${data.new_status}`);
-      fetchSeason();
-    } catch (e: any) {
-      setError(e.message);
-    } finally {
-      setAdvancing(false);
-    }
-  }
-
-  async function endLeaguePhase() {
-    if (!confirm('End the league phase? This will calculate final positions and determine Champions League qualifiers.')) return;
-    setEndingLeague(true);
-    setError('');
-    try {
-      const res = await fetch('/api/admin/season-end', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-admin-secret': 'ss4-admin-2026-abc',
-        },
-        body: JSON.stringify({ season: season?.id }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
-      setSuccess(`League phase ended. ${data.cup_qualifiers} Champions League qualifiers.`);
-      fetchSeason();
-    } catch (e: any) {
-      setError(e.message);
-    } finally {
-      setEndingLeague(false);
-    }
-  }
-
-  async function clActionHandler(action: string) {
-    setClAction(action);
-    setError('');
-    try {
-      const body: any = { action, season: season?.id };
-      if (action === 'finalize') {
-        body.cl_winner_id = clWinnerId;
-        body.cl_runner_up_id = clRunnerUpId || null;
-      }
-      const res = await fetch('/api/champions-league', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-admin-secret': 'ss4-admin-2026-abc',
-        },
-        body: JSON.stringify(body),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
-      setSuccess(`${action}: ${data.success ? 'Done!' : JSON.stringify(data)}`);
-      fetchSeason();
-    } catch (e: any) {
-      setError(e.message);
-    } finally {
-      setClAction('');
-    }
-  }
-
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <Loader2 className="animate-spin text-gold" size={28} />
-      </div>
-    );
-  }
-
-  const currentStatusIdx = STATUS_FLOW.findIndex(s => s.status === season?.status);
-
-  return (
-    <div className="space-y-8 page-enter">
-      <div>
-        <h1 className="font-display text-2xl font-bold text-chalk">Season Controls</h1>
-        <p className="text-ink-400 text-sm mt-1">Manage the season lifecycle</p>
-      </div>
-
-      {/* Error / Success */}
-      {error && (
-        <div className="card p-4 bg-red-900/20 border-red-700/50 text-red-300 text-sm">{error}</div>
-      )}
-      {success && (
-        <div className="card p-4 bg-green-900/20 border-green-700/50 text-green-300 text-sm flex items-center gap-2">
-          <CheckCircle size={14} /> {success}
-        </div>
-      )}
-
-      {/* Status flow */}
-      <div className="card p-5">
-        <div className="text-sm font-semibold text-chalk mb-4">Season Progress</div>
-        <div className="flex items-center gap-2 flex-wrap">
-          {STATUS_FLOW.map((s, i) => (
-            <div key={s.status} className="flex items-center gap-2">
-              <div className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm border ${
-                i === currentStatusIdx
-                  ? 'bg-gold/10 border-gold/30 text-gold'
-                  : i < currentStatusIdx
-                  ? 'bg-green-900/20 border-green-700/50 text-green-300'
-                  : 'bg-ink-800 border-ink-700 text-ink-400'
-              }`}>
-                <span>{s.icon}</span>
-                <span>{s.label}</span>
-              </div>
-              {i < STATUS_FLOW.length - 1 && (
-                <ArrowRight size={14} className="text-ink-600 flex-shrink-0" />
-              )}
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* Current season info */}
-      {season && (
-        <div className="card p-5">
-          <div className="text-sm font-semibold text-chalk mb-3">Current Season</div>
-          <div className="grid grid-cols-2 gap-4 text-sm">
-            <div>
-              <span className="text-ink-400">Name:</span>{' '}
-              <span className="text-chalk">{season.name}</span>
-            </div>
-            <div>
-              <span className="text-ink-400">Status:</span>{' '}
-              <span className="text-chalk capitalize">{season.status.replace(/_/g, ' ')}</span>
-            </div>
-            <div>
-              <span className="text-ink-400">Start:</span>{' '}
-              <span className="text-chalk">{season.start_date}</span>
-            </div>
-            <div>
-              <span className="text-ink-400">End:</span>{' '}
-              <span className="text-chalk">{season.end_date ?? 'TBD'}</span>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Actions */}
-      <div className="space-y-4">
-        {/* Advance status */}
-        <div className="card p-5">
-          <div className="flex items-center justify-between">
-            <div>
-              <div className="text-sm text-chalk font-medium">Advance Season Status</div>
-              <div className="text-xs text-ink-400 mt-0.5">
-                Moves to the next stage: {STATUS_FLOW[currentStatusIdx + 1]?.label ?? 'Complete'}
-              </div>
-            </div>
-            <button
-              onClick={advanceStatus}
-              disabled={advancing || !season || season.status === 'complete'}
-              className="btn-gold gap-2"
-            >
-              {advancing ? <Loader2 size={14} className="animate-spin" /> : <ArrowRight size={14} />}
-              Advance
-            </button>
-          </div>
-        </div>
-
-        {/* End league phase */}
-        <div className="card p-5">
-          <div className="flex items-center justify-between">
-            <div>
-              <div className="text-sm text-chalk font-medium">End League Phase</div>
-              <div className="text-xs text-ink-400 mt-0.5">
-                Calculates final positions, determines CL qualifiers, and advances to Champions League stage.
-              </div>
-            </div>
-            <button
-              onClick={endLeaguePhase}
-              disabled={endingLeague || season?.status !== 'active'}
-              className="btn-gold gap-2"
-            >
-              {endingLeague ? <Loader2 size={14} className="animate-spin" /> : <Trophy size={14} />}
-              End League Phase
-            </button>
-          </div>
-        </div>
-
-        {/* Champions League */}
-        <div className="card p-5 space-y-4">
-          <div>
-            <div className="text-sm text-chalk font-medium">Champions League Management</div>
-            <div className="text-xs text-ink-400 mt-0.5">
-              Only available when season is in champions_league status.
-            </div>
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-            <button
-              onClick={() => clActionHandler('draw_groups')}
-              disabled={clAction !== '' || season?.status !== 'champions_league'}
-              className="btn-ghost gap-2 justify-center"
-            >
-              {clAction === 'draw_groups' ? <Loader2 size={14} className="animate-spin" /> : <Users size={14} />}
-              Draw Groups
-            </button>
-            <button
-              onClick={() => clActionHandler('generate_knockout')}
-              disabled={clAction !== '' || season?.status !== 'champions_league'}
-              className="btn-ghost gap-2 justify-center"
-            >
-              {clAction === 'generate_knockout' ? <Loader2 size={14} className="animate-spin" /> : <Trophy size={14} />}
-              Generate Knockout
-            </button>
-            <button
-              onClick={() => clActionHandler('finalize')}
-              disabled={clAction !== '' || season?.status !== 'champions_league' || !clWinnerId}
-              className="btn-ghost gap-2 justify-center"
-            >
-              {clAction === 'finalize' ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle size={14} />}
-              Finalize
-            </button>
-          </div>
-          {(season?.status === 'champions_league') && (
-            <div className="grid grid-cols-2 gap-3 pt-2">
-              <input
-                type="text"
-                placeholder="CL Winner Player ID"
-                value={clWinnerId}
-                onChange={e => setClWinnerId(e.target.value)}
-                className="input"
-              />
-              <input
-                type="text"
-                placeholder="CL Runner-Up Player ID (optional)"
-                value={clRunnerUpId}
-                onChange={e => setClRunnerUpId(e.target.value)}
-                className="input"
-              />
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-</file>
-
 <file path="src/app/api/admin/anti-cheat/flagged-games/route.ts">
 import { createClient } from '@supabase/supabase-js';
 import { NextRequest, NextResponse } from 'next/server';
@@ -2105,7 +2225,7 @@ export async function POST(req: NextRequest) {
 }
 </file>
 
-<file path="src/app/api/admin/league/route.ts">
+<file path="src/app/api/admin/leagues/route.ts">
 import { createClient } from '@supabase/supabase-js';
 import { NextRequest, NextResponse } from 'next/server';
 
@@ -6901,6 +7021,582 @@ export default function AdminAntiCheatPage() {
 }
 </file>
 
+<file path="src/app/admin/fixtures/page.tsx">
+'use client';
+
+import { leagueName } from '@/lib/utils';
+import { Calendar, Loader2, CheckCircle, Swords } from 'lucide-react';
+import { useEffect, useState } from 'react';
+
+interface LeagueInfo {
+  league: string;
+  playerCount: number;
+  hasFixtures: boolean;
+}
+
+export default function AdminFixturesPage() {
+  const [leagues, setLeagues] = useState<LeagueInfo[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [generating, setGenerating] = useState<string | null>(null);
+  const [scelGenerating, setScelGenerating] = useState(false);
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+  const [season, setSeason] = useState(1);
+  const [startDate, setStartDate] = useState('');
+  const [scelData, setScelData] = useState<any>(null);
+
+  useEffect(() => {
+    fetchCurrentSeason();
+    fetchLeagues();
+  }, []);
+
+  async function fetchCurrentSeason() {
+      try {
+        const res = await fetch('/api/admin/season?action=current', {
+          headers: {
+            'x-admin-secret': 'ss4-admin-2026-abc',
+          },
+        });
+        const data = await res.json();
+        if (data.season?.id) setSeason(data.season.id);
+      } catch {}
+    }
+
+  async function fetchLeagues() {
+      try {
+        const res = await fetch('/api/admin/leagues', {
+          headers: {
+            'x-admin-secret': 'ss4-admin-2026-abc',
+          },
+        });
+        const data = await res.json();
+        setLeagues(data.leagues ?? []);
+      } catch (e: any) {
+        setError(e.message);
+      } finally {
+        setLoading(false);
+      }
+    }
+
+  async function generateLeagueFixtures(league: string) {
+    if (!startDate) {
+      setError('Please set a start date first.');
+      return;
+    }
+    setGenerating(league);
+    setError('');
+    setSuccess('');
+    try {
+      const res = await fetch('/api/fixtures', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-admin-secret': 'ss4-admin-2026-abc',
+        },
+        body: JSON.stringify({ season, league, start_date: startDate, time_control: '600+5' }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      setSuccess(`Fixtures generated for ${leagueName(league)}: ${data.fixtures_created} games, ${data.rounds} rounds.`);
+      fetchLeagues();
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setGenerating(null);
+    }
+  }
+
+  async function generateAllFixtures() {
+    if (!startDate) {
+      setError('Please set a start date first.');
+      return;
+    }
+    if (!confirm(`Generate fixtures for ALL leagues starting ${startDate}?`)) return;
+    setError('');
+    setSuccess('');
+    let generated = 0;
+    for (const l of leagues.filter(l => !l.hasFixtures)) {
+      setGenerating(l.league);
+      try {
+        const res = await fetch('/api/fixtures', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'x-admin-secret': 'ss4-admin-2026-abc',
+          },
+          body: JSON.stringify({ season, league: l.league, start_date: startDate, time_control: '600+5' }),
+        });
+        if (res.ok) generated++;
+      } catch {}
+    }
+    setGenerating(null);
+    setSuccess(`Fixtures generated for ${generated} leagues.`);
+    fetchLeagues();
+  }
+
+  async function generateScelBracket() {
+    setScelGenerating(true);
+    setError('');
+    setSuccess('');
+    try {
+      const res = await fetch('/api/competitions/scel', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-admin-secret': 'ss4-admin-2026-abc',
+        },
+        body: JSON.stringify({ season, action: 'generate_bracket' }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      setScelData(data);
+      setSuccess(`SCEL bracket generated! ${data.participants} players, ${data.bracket_size}-player bracket, ${data.byes_awarded} byes awarded.`);
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setScelGenerating(false);
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <Loader2 className="animate-spin text-gold" size={28} />
+      </div>
+    );
+  }
+
+  const allHaveFixtures = leagues.every(l => l.hasFixtures);
+
+  return (
+    <div className="space-y-8 page-enter">
+      <div>
+        <h1 className="font-display text-2xl font-bold text-chalk">Fixtures & SCEL</h1>
+        <p className="text-ink-400 text-sm mt-1">Generate league fixtures and SCEL bracket</p>
+      </div>
+
+      {/* Error / Success */}
+      {error && (
+        <div className="card p-4 bg-red-900/20 border-red-700/50 text-red-300 text-sm">{error}</div>
+      )}
+      {success && (
+        <div className="card p-4 bg-green-900/20 border-green-700/50 text-green-300 text-sm flex items-center gap-2">
+          <CheckCircle size={14} /> {success}
+        </div>
+      )}
+
+      {/* Start date */}
+      <div className="card p-5">
+        <label className="text-xs text-ink-400 block mb-2">Season Start Date</label>
+        <div className="flex gap-3 items-center">
+          <input
+            type="date"
+            value={startDate}
+            onChange={e => setStartDate(e.target.value)}
+            className="input w-48"
+          />
+          <button
+            onClick={generateAllFixtures}
+            disabled={!startDate || allHaveFixtures || generating !== null}
+            className="btn-gold gap-2"
+          >
+            <Calendar size={14} />
+            Generate All League Fixtures
+          </button>
+        </div>
+      </div>
+
+      {/* League fixtures */}
+      <div className="card overflow-hidden">
+        <div className="px-4 py-3 border-b border-ink-700 bg-ink-900">
+          <div className="text-sm font-semibold text-chalk">League Fixtures</div>
+        </div>
+        <div className="divide-y divide-ink-700">
+          {leagues.map(l => (
+            <div key={l.league} className="flex items-center justify-between px-4 py-3">
+              <div>
+                <div className="text-sm text-chalk">{leagueName(l.league)}</div>
+                <div className="text-xs text-ink-400">{l.playerCount} players</div>
+              </div>
+              {l.hasFixtures ? (
+                <span className="flex items-center gap-1.5 text-xs text-green-400">
+                  <CheckCircle size={12} /> Generated
+                </span>
+              ) : (
+                <button
+                  onClick={() => generateLeagueFixtures(l.league)}
+                  disabled={!startDate || generating === l.league}
+                  className="btn-ghost btn-sm gap-1.5"
+                >
+                  {generating === l.league ? (
+                    <Loader2 size={12} className="animate-spin" />
+                  ) : (
+                    <Calendar size={12} />
+                  )}
+                  Generate
+                </button>
+              )}
+            </div>
+          ))}
+          {leagues.length === 0 && (
+            <div className="px-4 py-8 text-center text-ink-400 text-sm">
+              No leagues formed yet. Run the draft first.
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* SCEL Bracket */}
+      <div className="card p-5 space-y-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="text-sm font-semibold text-chalk">SCEL Bracket</div>
+            <div className="text-xs text-ink-400 mt-0.5">
+              SS4 Chess Elimination League — single elimination bracket
+            </div>
+          </div>
+          <button
+            onClick={generateScelBracket}
+            disabled={scelGenerating}
+            className="btn-gold gap-2"
+          >
+            {scelGenerating ? <Loader2 size={14} className="animate-spin" /> : <Swords size={14} />}
+            Generate SCEL Bracket
+          </button>
+        </div>
+
+        {scelData && (
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <div className="bg-ink-800 rounded-lg p-3 text-center">
+              <div className="text-xs text-ink-400">Participants</div>
+              <div className="text-lg font-bold text-chalk">{scelData.participants}</div>
+            </div>
+            <div className="bg-ink-800 rounded-lg p-3 text-center">
+              <div className="text-xs text-ink-400">Bracket Size</div>
+              <div className="text-lg font-bold text-chalk">{scelData.bracket_size}</div>
+            </div>
+            <div className="bg-ink-800 rounded-lg p-3 text-center">
+              <div className="text-xs text-ink-400">Rounds</div>
+              <div className="text-lg font-bold text-chalk">{scelData.total_rounds}</div>
+            </div>
+            <div className="bg-ink-800 rounded-lg p-3 text-center">
+              <div className="text-xs text-ink-400">Byes</div>
+              <div className="text-lg font-bold text-chalk">{scelData.byes_awarded}</div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+</file>
+
+<file path="src/app/admin/season/page.tsx">
+'use client';
+
+import { Loader2, CheckCircle, ArrowRight, Trophy, Users } from 'lucide-react';
+import { useEffect, useState } from 'react';
+
+interface SeasonInfo {
+  id: number;
+  name: string;
+  status: string;
+  start_date: string;
+  end_date: string | null;
+}
+
+const STATUS_FLOW = [
+  { status: 'registration', label: 'Registration', icon: '📝' },
+  { status: 'draft', label: 'Draft', icon: '🎯' },
+  { status: 'active', label: 'Active (League + SCEL)', icon: '⚔️' },
+  { status: 'champions_league', label: 'Champions League', icon: '👑' },
+  { status: 'complete', label: 'Complete', icon: '🏆' },
+];
+
+export default function AdminSeasonPage() {
+  const [season, setSeason] = useState<SeasonInfo | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [advancing, setAdvancing] = useState(false);
+  const [endingLeague, setEndingLeague] = useState(false);
+  const [clAction, setClAction] = useState('');
+  const [clWinnerId, setClWinnerId] = useState('');
+  const [clRunnerUpId, setClRunnerUpId] = useState('');
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+
+  useEffect(() => {
+    fetchSeason();
+  }, []);
+
+  async function fetchSeason() {
+      try {
+        const res = await fetch('/api/admin/season?action=current', {
+          headers: {
+            'x-admin-secret': 'ss4-admin-2026-abc',
+          },
+        });
+        const data = await res.json();
+        setSeason(data.season);
+      } catch (e: any) {
+        setError(e.message);
+      } finally {
+        setLoading(false);
+      }
+    }
+
+  async function advanceStatus() {
+    if (!confirm(`Advance season from "${season?.status}" to the next stage?`)) return;
+    setAdvancing(true);
+    setError('');
+    try {
+      const res = await fetch('/api/admin/season', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-admin-secret': 'ss4-admin-2026-abc',
+        },
+        body: JSON.stringify({ action: 'advance_status', season: season?.id }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      setSuccess(`Season advanced: ${data.previous_status} → ${data.new_status}`);
+      fetchSeason();
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setAdvancing(false);
+    }
+  }
+
+  async function endLeaguePhase() {
+    if (!confirm('End the league phase? This will calculate final positions and determine Champions League qualifiers.')) return;
+    setEndingLeague(true);
+    setError('');
+    try {
+      const res = await fetch('/api/admin/season-end', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-admin-secret': 'ss4-admin-2026-abc',
+        },
+        body: JSON.stringify({ season: season?.id }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      setSuccess(`League phase ended. ${data.cup_qualifiers} Champions League qualifiers.`);
+      fetchSeason();
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setEndingLeague(false);
+    }
+  }
+
+  async function clActionHandler(action: string) {
+    setClAction(action);
+    setError('');
+    try {
+      const body: any = { action, season: season?.id };
+      if (action === 'finalize') {
+        body.cl_winner_id = clWinnerId;
+        body.cl_runner_up_id = clRunnerUpId || null;
+      }
+      const res = await fetch('/api/champions-league', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-admin-secret': 'ss4-admin-2026-abc',
+        },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      setSuccess(`${action}: ${data.success ? 'Done!' : JSON.stringify(data)}`);
+      fetchSeason();
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setClAction('');
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <Loader2 className="animate-spin text-gold" size={28} />
+      </div>
+    );
+  }
+
+  const currentStatusIdx = STATUS_FLOW.findIndex(s => s.status === season?.status);
+
+  return (
+    <div className="space-y-8 page-enter">
+      <div>
+        <h1 className="font-display text-2xl font-bold text-chalk">Season Controls</h1>
+        <p className="text-ink-400 text-sm mt-1">Manage the season lifecycle</p>
+      </div>
+
+      {/* Error / Success */}
+      {error && (
+        <div className="card p-4 bg-red-900/20 border-red-700/50 text-red-300 text-sm">{error}</div>
+      )}
+      {success && (
+        <div className="card p-4 bg-green-900/20 border-green-700/50 text-green-300 text-sm flex items-center gap-2">
+          <CheckCircle size={14} /> {success}
+        </div>
+      )}
+
+      {/* Status flow */}
+      <div className="card p-5">
+        <div className="text-sm font-semibold text-chalk mb-4">Season Progress</div>
+        <div className="flex items-center gap-2 flex-wrap">
+          {STATUS_FLOW.map((s, i) => (
+            <div key={s.status} className="flex items-center gap-2">
+              <div className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm border ${
+                i === currentStatusIdx
+                  ? 'bg-gold/10 border-gold/30 text-gold'
+                  : i < currentStatusIdx
+                  ? 'bg-green-900/20 border-green-700/50 text-green-300'
+                  : 'bg-ink-800 border-ink-700 text-ink-400'
+              }`}>
+                <span>{s.icon}</span>
+                <span>{s.label}</span>
+              </div>
+              {i < STATUS_FLOW.length - 1 && (
+                <ArrowRight size={14} className="text-ink-600 flex-shrink-0" />
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Current season info */}
+      {season && (
+        <div className="card p-5">
+          <div className="text-sm font-semibold text-chalk mb-3">Current Season</div>
+          <div className="grid grid-cols-2 gap-4 text-sm">
+            <div>
+              <span className="text-ink-400">Name:</span>{' '}
+              <span className="text-chalk">{season.name}</span>
+            </div>
+            <div>
+              <span className="text-ink-400">Status:</span>{' '}
+              <span className="text-chalk capitalize">{season.status.replace(/_/g, ' ')}</span>
+            </div>
+            <div>
+              <span className="text-ink-400">Start:</span>{' '}
+              <span className="text-chalk">{season.start_date}</span>
+            </div>
+            <div>
+              <span className="text-ink-400">End:</span>{' '}
+              <span className="text-chalk">{season.end_date ?? 'TBD'}</span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Actions */}
+      <div className="space-y-4">
+        {/* Advance status */}
+        <div className="card p-5">
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-sm text-chalk font-medium">Advance Season Status</div>
+              <div className="text-xs text-ink-400 mt-0.5">
+                Moves to the next stage: {STATUS_FLOW[currentStatusIdx + 1]?.label ?? 'Complete'}
+              </div>
+            </div>
+            <button
+              onClick={advanceStatus}
+              disabled={advancing || !season || season.status === 'complete'}
+              className="btn-gold gap-2"
+            >
+              {advancing ? <Loader2 size={14} className="animate-spin" /> : <ArrowRight size={14} />}
+              Advance
+            </button>
+          </div>
+        </div>
+
+        {/* End league phase */}
+        <div className="card p-5">
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-sm text-chalk font-medium">End League Phase</div>
+              <div className="text-xs text-ink-400 mt-0.5">
+                Calculates final positions, determines CL qualifiers, and advances to Champions League stage.
+              </div>
+            </div>
+            <button
+              onClick={endLeaguePhase}
+              disabled={endingLeague || season?.status !== 'active'}
+              className="btn-gold gap-2"
+            >
+              {endingLeague ? <Loader2 size={14} className="animate-spin" /> : <Trophy size={14} />}
+              End League Phase
+            </button>
+          </div>
+        </div>
+
+        {/* Champions League */}
+        <div className="card p-5 space-y-4">
+          <div>
+            <div className="text-sm text-chalk font-medium">Champions League Management</div>
+            <div className="text-xs text-ink-400 mt-0.5">
+              Only available when season is in champions_league status.
+            </div>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <button
+              onClick={() => clActionHandler('draw_groups')}
+              disabled={clAction !== '' || season?.status !== 'champions_league'}
+              className="btn-ghost gap-2 justify-center"
+            >
+              {clAction === 'draw_groups' ? <Loader2 size={14} className="animate-spin" /> : <Users size={14} />}
+              Draw Groups
+            </button>
+            <button
+              onClick={() => clActionHandler('generate_knockout')}
+              disabled={clAction !== '' || season?.status !== 'champions_league'}
+              className="btn-ghost gap-2 justify-center"
+            >
+              {clAction === 'generate_knockout' ? <Loader2 size={14} className="animate-spin" /> : <Trophy size={14} />}
+              Generate Knockout
+            </button>
+            <button
+              onClick={() => clActionHandler('finalize')}
+              disabled={clAction !== '' || season?.status !== 'champions_league' || !clWinnerId}
+              className="btn-ghost gap-2 justify-center"
+            >
+              {clAction === 'finalize' ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle size={14} />}
+              Finalize
+            </button>
+          </div>
+          {(season?.status === 'champions_league') && (
+            <div className="grid grid-cols-2 gap-3 pt-2">
+              <input
+                type="text"
+                placeholder="CL Winner Player ID"
+                value={clWinnerId}
+                onChange={e => setClWinnerId(e.target.value)}
+                className="input"
+              />
+              <input
+                type="text"
+                placeholder="CL Runner-Up Player ID (optional)"
+                value={clRunnerUpId}
+                onChange={e => setClRunnerUpId(e.target.value)}
+                className="input"
+              />
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+</file>
+
 <file path="src/app/api/champions-league/route.ts">
 import { drawCLGroups } from "@/lib/fixture-generator";
 import { createServerClient } from "@/lib/supabase";
@@ -9963,147 +10659,6 @@ async function main() {
 main().catch(console.error);
 </file>
 
-<file path="src/app/api/admin/season/route.ts">
-import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
- 
-const adminSupabase = () =>
-  createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!
-  );
- 
-// Valid season status transitions
-const TRANSITIONS: Record<string, string> = {
-  registration:      'draft',
-  draft:             'active',
-  active:            'playoffs',
-  playoffs:          'champions_league',
-  champions_league:  'complete',
-};
- 
-// POST /api/admin/season
-// Actions: advance_status | create_season | process_promotion_relegation | reset_forfeits
-export async function POST(req: NextRequest) {
-  if (req.headers.get('x-admin-secret') !== process.env.ADMIN_SECRET)
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
- 
-  const body = await req.json();
-  const { action, season } = body;
-  const supabase = adminSupabase();
- 
-  // ── advance_status ────────────────────────────────────────────
-  if (action === 'advance_status') {
-    const { data: s } = await supabase.from('seasons').select('id, status').eq('id', season).single();
-    if (!s) return NextResponse.json({ error: 'Season not found' }, { status: 404 });
-    const next = TRANSITIONS[s.status];
-    if (!next) return NextResponse.json({ error: `Cannot advance from status: ${s.status}` }, { status: 400 });
- 
-    await supabase.from('seasons').update({ status: next }).eq('id', season);
-    return NextResponse.json({ success: true, previous_status: s.status, new_status: next });
-  }
- 
-  // ── create_season ─────────────────────────────────────────────
-  if (action === 'create_season') {
-    const { name, start_date, end_date } = body;
-    const { data: existing } = await supabase.from('seasons').select('id').order('id', { ascending: false }).limit(1).single();
-    const newId = (existing?.id ?? 0) + 1;
-    const { data, error } = await supabase.from('seasons').insert({
-      id: newId, name: name ?? `Season ${newId}`,
-      start_date: start_date ?? new Date().toISOString().split('T')[0],
-      end_date: end_date ?? null, status: 'registration',
-    }).select().single();
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-    return NextResponse.json({ success: true, season: data });
-  }
- 
-  // ── process_promotion_relegation ──────────────────────────────
-  if (action === 'process_promotion_relegation') {
-    const leagues = ['league_1', 'league_2', 'league_3', 'league_4'];
-    const changes: any[] = [];
- 
-    for (const league of leagues) {
-      // Get final Premier standings
-      const { data: premierStandings } = await supabase
-        .from('standings')
-        .select('player_id, points, wins')
-        .eq('season', season).eq('league', league).eq('tier', 'premier')
-        .order('points', { ascending: false })
-        .order('wins', { ascending: false });
- 
-      const { data: devStandings } = await supabase
-        .from('standings')
-        .select('player_id, points, wins')
-        .eq('season', season).eq('league', league).eq('tier', 'development')
-        .order('points', { ascending: false })
-        .order('wins', { ascending: false });
- 
-      if (!premierStandings?.length || !devStandings?.length) continue;
- 
-      // Bottom 2 Premier → relegated; Top 2 Development → promoted
-      const relegated = premierStandings.slice(-2);
-      const promoted = devStandings.slice(0, 2);
- 
-      for (const p of relegated) {
-        // tier removed
-        changes.push({ player_id: p.player_id, action: 'relegated', league, from: 'premier', to: 'development' });
-        await supabase.from('notifications').insert({
-          player_id: p.player_id, type: 'promotion_relegation', title: 'Relegated to Development Tier',
-          message: `You have been relegated to the Development Tier for Season ${season + 1}. Fight your way back!`,
-        });
-      }
- 
-      for (const p of promoted) {
-        // tier removed
-        changes.push({ player_id: p.player_id, action: 'promoted', league, from: 'development', to: 'premier' });
-        await supabase.from('notifications').insert({
-          player_id: p.player_id, type: 'promotion_relegation', title: 'Promoted to Premier Tier!',
-          message: `Congratulations! You have been promoted to the Premier Tier for Season ${season + 1}.`,
-        });
-        // Award Comeback King badge if they were previously relegated
-        await supabase.from('player_badges').upsert({
-          player_id: p.player_id, badge_type: 'comeback_king', season,
-          description: 'Promoted after finishing in top 2 of Development Tier',
-        }, { onConflict: 'player_id,badge_type,season', ignoreDuplicates: true });
-      }
-    }
- 
-    return NextResponse.json({ success: true, changes });
-  }
- 
-  // ── reset_forfeits ────────────────────────────────────────────
-  if (action === 'reset_forfeits') {
-    // Called at start of each new season
-    await supabase.from('players').update({ season_forfeit_count: 0 });
-    return NextResponse.json({ success: true, message: 'Forfeit counts reset for all players' });
-  }
- 
-  return NextResponse.json({ error: 'Unknown action' }, { status: 400 });
-}
-
-export async function GET(req: NextRequest) {
-  if (req.headers.get('x-admin-secret') !== process.env.ADMIN_SECRET) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
-
-  const supabase = adminSupabase();
-  const action = new URL(req.url).searchParams.get('action');
-
-  if (action === 'current') {
-    const { data: season } = await supabase
-      .from('seasons')
-      .select('*')
-      .order('id', { ascending: false })
-      .limit(1)
-      .single();
-
-    return NextResponse.json({ season });
-  }
-
-  return NextResponse.json({ error: 'Unknown action' }, { status: 400 });
-}
-</file>
-
 <file path="src/app/api/calibration/route.ts">
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@supabase/supabase-js';
@@ -12633,6 +13188,146 @@ export default function AdminOverviewPage() {
 }
 </file>
 
+<file path="src/app/api/admin/season/route.ts">
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+ 
+const adminSupabase = () =>
+  createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!
+  );
+ 
+// Valid season status transitions
+const TRANSITIONS: Record<string, string> = {
+  registration:      'draft',
+  draft:             'active',
+  active:            'champions_league',
+  champions_league:  'complete',
+};
+ 
+// POST /api/admin/season
+// Actions: advance_status | create_season | process_promotion_relegation | reset_forfeits
+export async function POST(req: NextRequest) {
+  if (req.headers.get('x-admin-secret') !== process.env.ADMIN_SECRET)
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+ 
+  const body = await req.json();
+  const { action, season } = body;
+  const supabase = adminSupabase();
+ 
+  // ── advance_status ────────────────────────────────────────────
+  if (action === 'advance_status') {
+    const { data: s } = await supabase.from('seasons').select('id, status').eq('id', season).single();
+    if (!s) return NextResponse.json({ error: 'Season not found' }, { status: 404 });
+    const next = TRANSITIONS[s.status];
+    if (!next) return NextResponse.json({ error: `Cannot advance from status: ${s.status}` }, { status: 400 });
+ 
+    await supabase.from('seasons').update({ status: next }).eq('id', season);
+    return NextResponse.json({ success: true, previous_status: s.status, new_status: next });
+  }
+ 
+  // ── create_season ─────────────────────────────────────────────
+  if (action === 'create_season') {
+    const { name, start_date, end_date } = body;
+    const { data: existing } = await supabase.from('seasons').select('id').order('id', { ascending: false }).limit(1).single();
+    const newId = (existing?.id ?? 0) + 1;
+    const { data, error } = await supabase.from('seasons').insert({
+      id: newId, name: name ?? `Season ${newId}`,
+      start_date: start_date ?? new Date().toISOString().split('T')[0],
+      end_date: end_date ?? null, status: 'registration',
+    }).select().single();
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ success: true, season: data });
+  }
+ 
+  // ── process_promotion_relegation ──────────────────────────────
+  if (action === 'process_promotion_relegation') {
+    const leagues = ['league_1', 'league_2', 'league_3', 'league_4'];
+    const changes: any[] = [];
+ 
+    for (const league of leagues) {
+      // Get final Premier standings
+      const { data: premierStandings } = await supabase
+        .from('standings')
+        .select('player_id, points, wins')
+        .eq('season', season).eq('league', league).eq('tier', 'premier')
+        .order('points', { ascending: false })
+        .order('wins', { ascending: false });
+ 
+      const { data: devStandings } = await supabase
+        .from('standings')
+        .select('player_id, points, wins')
+        .eq('season', season).eq('league', league).eq('tier', 'development')
+        .order('points', { ascending: false })
+        .order('wins', { ascending: false });
+ 
+      if (!premierStandings?.length || !devStandings?.length) continue;
+ 
+      // Bottom 2 Premier → relegated; Top 2 Development → promoted
+      const relegated = premierStandings.slice(-2);
+      const promoted = devStandings.slice(0, 2);
+ 
+      for (const p of relegated) {
+        // tier removed
+        changes.push({ player_id: p.player_id, action: 'relegated', league, from: 'premier', to: 'development' });
+        await supabase.from('notifications').insert({
+          player_id: p.player_id, type: 'promotion_relegation', title: 'Relegated to Development Tier',
+          message: `You have been relegated to the Development Tier for Season ${season + 1}. Fight your way back!`,
+        });
+      }
+ 
+      for (const p of promoted) {
+        // tier removed
+        changes.push({ player_id: p.player_id, action: 'promoted', league, from: 'development', to: 'premier' });
+        await supabase.from('notifications').insert({
+          player_id: p.player_id, type: 'promotion_relegation', title: 'Promoted to Premier Tier!',
+          message: `Congratulations! You have been promoted to the Premier Tier for Season ${season + 1}.`,
+        });
+        // Award Comeback King badge if they were previously relegated
+        await supabase.from('player_badges').upsert({
+          player_id: p.player_id, badge_type: 'comeback_king', season,
+          description: 'Promoted after finishing in top 2 of Development Tier',
+        }, { onConflict: 'player_id,badge_type,season', ignoreDuplicates: true });
+      }
+    }
+ 
+    return NextResponse.json({ success: true, changes });
+  }
+ 
+  // ── reset_forfeits ────────────────────────────────────────────
+  if (action === 'reset_forfeits') {
+    // Called at start of each new season
+    await supabase.from('players').update({ season_forfeit_count: 0 });
+    return NextResponse.json({ success: true, message: 'Forfeit counts reset for all players' });
+  }
+ 
+  return NextResponse.json({ error: 'Unknown action' }, { status: 400 });
+}
+
+export async function GET(req: NextRequest) {
+  if (req.headers.get('x-admin-secret') !== process.env.ADMIN_SECRET) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  const supabase = adminSupabase();
+  const action = new URL(req.url).searchParams.get('action');
+
+  if (action === 'current') {
+    const { data: season } = await supabase
+      .from('seasons')
+      .select('*')
+      .order('id', { ascending: false })
+      .limit(1)
+      .single();
+
+    return NextResponse.json({ season });
+  }
+
+  return NextResponse.json({ error: 'Unknown action' }, { status: 400 });
+}
+</file>
+
 <file path="src/app/api/casual/route.ts">
 import { createClient } from '@supabase/supabase-js';
 import { NextRequest, NextResponse } from 'next/server';
@@ -12825,6 +13520,11 @@ export async function POST(req: NextRequest) {
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
     return NextResponse.json({ error: 'Invalid email address.' }, { status: 400 });
 
+  // WhatsApp validation (required)
+  if (!whatsapp_number?.trim() || !/^(\+234|234|0)[7-9]\d{9}$/.test(whatsapp_number.replace(/[\s\-\(\)]/g, ''))) {
+    return NextResponse.json({ error: 'A valid Nigerian WhatsApp number is required (+234, 234, or 0 prefix).' }, { status: 400 });
+  }
+
   const supabase = adminDb();
 
   // ── Check if this email is already registered ─────────────────────────────
@@ -12898,7 +13598,7 @@ export async function POST(req: NextRequest) {
       email:                email.toLowerCase().trim(),
       chess_com_username:   chess_com_username?.trim() || null,
       lichess_username:     lichess_username?.trim() || null,
-      whatsapp_number:      whatsapp_number?.trim() || null,
+      whatsapp_number:      whatsapp_number.trim(),
       year_started_chess:   year_started_chess ? Number(year_started_chess) : null,
       joining_season:       season.id,
       home_league:          'unassigned',
@@ -12963,7 +13663,6 @@ export async function GET(req: NextRequest) {
     .order('ss4_rating', { ascending: false });
 
   if (league) query = query.eq('home_league', league);
-  // tier filter removed — tiers no longer exist
   if (search) query = query.ilike('full_name', `%${search}%`);
 
   const { data, error } = await query;
@@ -14901,9 +15600,9 @@ export default function RegisterPage() {
     email:              '',
     password:           '',
     confirm_password:   '',
+    whatsapp_number:    '',
     chess_com_username: '',
     lichess_username:   '',
-    whatsapp_number:    '',
     year_started_chess: '',
   });
 
@@ -14935,6 +15634,11 @@ export default function RegisterPage() {
     if (form.password !== form.confirm_password) {
       setError('Passwords do not match.'); return;
     }
+    // WhatsApp required validation
+    if (!form.whatsapp_number || !/^(\+234|234|0)[7-9]\d{9}$/.test(form.whatsapp_number.replace(/[\s\-\(\)]/g, ''))) {
+      setError('A valid Nigerian WhatsApp number is required (+234, 234, or 0 prefix).');
+      return;
+    }
 
     setLoading(true); setError('');
     try {
@@ -14945,9 +15649,9 @@ export default function RegisterPage() {
           full_name:          form.full_name,
           email:              form.email,
           password:           form.password,
+          whatsapp_number:    form.whatsapp_number.trim(),
           chess_com_username: form.chess_com_username || undefined,
           lichess_username:   form.lichess_username   || undefined,
-          whatsapp_number:    form.whatsapp_number    || undefined,
           year_started_chess: form.year_started_chess ? Number(form.year_started_chess) : undefined,
         }),
       });
@@ -15161,6 +15865,16 @@ export default function RegisterPage() {
             <input className="input" type="email" placeholder="your@email.com" value={form.email} onChange={set('email')} />
           </div>
           <div>
+            <label className="section-label block mb-1.5">
+              WhatsApp Number *
+              <span className="text-ink-500 normal-case"> (+234 format)</span>
+            </label>
+            <input className="input" placeholder="+234 812 345 6789" value={form.whatsapp_number} onChange={set('whatsapp_number')} />
+            {form.whatsapp_number && !/^(\+234|234|0)[7-9]\d{9}$/.test(form.whatsapp_number.replace(/[\s\-\(\)]/g, '')) && (
+              <p className="text-red-400 text-xs mt-1">Enter a valid Nigerian number (+234, 234, or 0 prefix)</p>
+            )}
+          </div>
+          <div>
             <label className="section-label block mb-1.5">Password *</label>
             <input className="input" type="password" placeholder="Min. 8 characters" value={form.password} onChange={set('password')} />
           </div>
@@ -15183,10 +15897,6 @@ export default function RegisterPage() {
                 <input className="input" placeholder="username" value={form.lichess_username} onChange={set('lichess_username')} />
               </div>
               <div>
-                <label className="section-label block mb-1.5">WhatsApp Number <span className="text-ink-500 normal-case">(for announcements)</span></label>
-                <input className="input" placeholder="+234..." value={form.whatsapp_number} onChange={set('whatsapp_number')} />
-              </div>
-              <div>
                 <label className="section-label block mb-1.5">Year You Started Playing Chess</label>
                 <input className="input" type="number" placeholder="e.g. 2020" min="1900" max="2030" value={form.year_started_chess} onChange={set('year_started_chess')} />
               </div>
@@ -15197,8 +15907,8 @@ export default function RegisterPage() {
         {/* Rating seed explainer */}
         <div className="card p-3 text-xs text-ink-400 space-y-0.5 bg-ink-900">
           <div className="text-chalk font-medium mb-1">How rating seeding works</div>
-          <div>• Chess.com / Lichess rapid rating &rarr; instant seed, skip calibration</div>
-          <div>• No platform account &rarr; 5 bot calibration games after registration</div>
+          <div>• Chess.com / Lichess rapid rating → instant seed, skip calibration</div>
+          <div>• No platform account → 5 bot calibration games after registration</div>
           <div>• All ratings shown as <span className="font-mono text-gold">1234?</span> until 5 SS4 league games played</div>
         </div>
 
@@ -17419,16 +18129,12 @@ require('dotenv').config({ path: '.env.local' });
 
 const app = express();
 
-// Accept any https:// origin (browser game clients) + localhost for dev.
-// Security is enforced by Supabase auth + player_id verification in game logic,
-// NOT by origin restriction. Blocking by origin only breaks production connections
-// when NEXT_PUBLIC_APP_URL on Render doesn't exactly match the Vercel deployment URL.
 const allowedOrigin = (origin, callback) => {
-  if (!origin) return callback(null, true); // same-origin / server-to-server
+  if (!origin) return callback(null, true);
   const ok =
-    origin.startsWith('https://') ||        // any browser HTTPS client
-    origin.startsWith('http://localhost') || // local dev
-    origin.startsWith('http://127.0.0.1');   // local dev
+    origin.startsWith('https://') ||
+    origin.startsWith('http://localhost') ||
+    origin.startsWith('http://127.0.0.1');
   if (!ok) console.warn(`[CORS] blocked origin: ${origin}`);
   callback(ok ? null : new Error('CORS blocked: ' + origin), ok);
 };
@@ -17439,7 +18145,6 @@ app.use(express.json());
 const httpServer = createServer(app);
 const io = new Server(httpServer, {
   cors: { origin: allowedOrigin, methods: ['GET', 'POST'], credentials: true },
-  // Longer timeouts for Render free tier cold-start delays
   pingTimeout: 60000, pingInterval: 25000,
   connectTimeout: 45000,
 });
@@ -17449,14 +18154,8 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
-// Active game states (in-memory, authoritative during game)
 const activeGames = new Map();
-
-// Prevents race condition when two players join simultaneously:
-// Maps game_id -> Promise of the DB setup so the second joiner awaits the first.
 const pendingGameSetup = new Map();
-
-// Pending challenge rooms: challenge_id -> Set of socket IDs waiting for acceptance
 const challengeRooms = new Map();
 
 function createGameState(game) {
@@ -17464,8 +18163,6 @@ function createGameState(game) {
   const baseMs = parseInt(baseStr) * 1000;
   const incMs = parseInt(incStr || '0') * 1000;
 
-  // Set PGN headers upfront so every chess.pgn() call throughout the game
-  // produces a properly-tagged PGN with real player names, date, etc.
   const cs = new Chess();
   const today = new Date().toISOString().split('T')[0].replace(/-/g, '.');
   cs.header(
@@ -17485,11 +18182,12 @@ function createGameState(game) {
     chess: cs,
     white_player_id: game.white_player_id,
     black_player_id: game.black_player_id,
-    // Player info populated after DB fetch
     white_name: game.white_name || 'White',
     black_name: game.black_name || 'Black',
     white_rating: game.white_rating || 1200,
     black_rating: game.black_rating || 1200,
+    white_whatsapp: game.white_whatsapp || null,
+    black_whatsapp: game.black_whatsapp || null,
     white_time: baseMs, black_time: baseMs,
     increment: incMs, base_time: baseMs,
     last_move_ts: null,
@@ -17504,7 +18202,7 @@ function createGameState(game) {
 }
 
 io.on('connection', socket => {
-  // ── Challenge lobby: challenger waits here for acceptance ──────────────────
+  // ── Challenge lobby ──────────────────────────────────────────────────────
   socket.on('join_challenge', ({ challenge_id, player_id }) => {
     const room = `challenge:${challenge_id}`;
     socket.join(room);
@@ -17520,6 +18218,7 @@ io.on('connection', socket => {
     challengeRooms.get(challenge_id)?.delete(socket.id);
   });
 
+  // ── Join game ────────────────────────────────────────────────────────────
   socket.on('join_game', async ({ game_id, player_id, auth_user_id, is_spectator }) => {
     const room = `game:${game_id}`;
 
@@ -17527,7 +18226,6 @@ io.on('connection', socket => {
     console.log(`[join_game] socket=${socket.id} game=${game_id}`);
     console.log(`[join_game] client sent  → auth_user_id=${auth_user_id ?? 'MISSING'} | player_id=${player_id ?? 'MISSING'} | is_spectator=${is_spectator}`);
 
-    // ── Server-side player ID resolution ──────────────────────────────────────
     let resolvedPlayerId = player_id ?? null;
     let resolveMethod = 'client_provided';
 
@@ -17547,7 +18245,6 @@ io.on('connection', socket => {
           console.log(`[join_game] ✓ resolved player_id=${resolvedPlayerId} via auth_user_id (name: ${playerRow.full_name})`);
         } else {
           console.warn(`[join_game] ✗ auth_user_id lookup returned no row — auth_user_id column may be NULL in DB for this player`);
-          // Last-ditch: look up by the player_id hint and verify it's in the game
           if (player_id) {
             console.log(`[join_game] falling back to client player_id=${player_id}`);
             resolveMethod = 'client_fallback';
@@ -17560,7 +18257,6 @@ io.on('connection', socket => {
       console.warn(`[join_game] No auth_user_id received from client — old client code? Using player_id=${player_id ?? 'null'}`);
     }
 
-    // Recompute is_spectator: only a spectator if we couldn't resolve any player ID
     const effectiveIsSpectator = !resolvedPlayerId || is_spectator === true;
     console.log(`[join_game] resolvedPlayerId=${resolvedPlayerId ?? 'NULL'} | resolveMethod=${resolveMethod} | effectiveIsSpectator=${effectiveIsSpectator}`);
 
@@ -17572,7 +18268,7 @@ io.on('connection', socket => {
         } else {
           const setupPromise = (async () => {
             const { data: game, error: gameError } = await supabase.from('games')
-              .select(`*, white_player:players!games_white_player_id_fkey(full_name, ss4_rating, auth_user_id), black_player:players!games_black_player_id_fkey(full_name, ss4_rating, auth_user_id)`)
+              .select(`*, white_player:players!games_white_player_id_fkey(full_name, ss4_rating, whatsapp_number, auth_user_id), black_player:players!games_black_player_id_fkey(full_name, ss4_rating, whatsapp_number, auth_user_id)`)
               .eq('id', game_id).single();
 
             if (gameError || !game) {
@@ -17582,8 +18278,6 @@ io.on('connection', socket => {
 
             console.log(`[join_game] game loaded from DB:`);
             console.log(`  result='${game.result}' white_player_id=${game.white_player_id} black_player_id=${game.black_player_id}`);
-            console.log(`  white_player=${JSON.stringify(game.white_player)}`);
-            console.log(`  black_player=${JSON.stringify(game.black_player)}`);
 
             if (game.result !== '*') {
               throw { type: 'already_finished', result: game.result, pgn: game.pgn, white_name: game.white_player?.full_name, black_name: game.black_player?.full_name };
@@ -17595,6 +18289,8 @@ io.on('connection', socket => {
               black_name: game.black_player?.full_name || 'Black',
               white_rating: game.white_player?.ss4_rating || 1200,
               black_rating: game.black_player?.ss4_rating || 1200,
+              white_whatsapp: game.white_player?.whatsapp_number || null,
+              black_whatsapp: game.black_player?.whatsapp_number || null,
             };
             if (!activeGames.has(game_id)) {
               activeGames.set(game_id, createGameState(enriched));
@@ -17626,15 +18322,6 @@ io.on('connection', socket => {
 
       const state = activeGames.get(game_id);
 
-      // ── THE CRITICAL COMPARISON — log everything ───────────────────────────
-      console.log(`[join_game] GAME STATE in memory:`);
-      console.log(`  white_player_id=${state.white_player_id}`);
-      console.log(`  black_player_id=${state.black_player_id}`);
-      console.log(`  state.connected BEFORE add: [${[...state.connected].join(', ')}]`);
-      console.log(`  resolvedPlayerId being added: ${resolvedPlayerId}`);
-      console.log(`  match white? ${resolvedPlayerId === state.white_player_id}`);
-      console.log(`  match black? ${resolvedPlayerId === state.black_player_id}`);
-
       socket.join(room);
       socket.data = { game_id, player_id: resolvedPlayerId, is_spectator: effectiveIsSpectator };
 
@@ -17646,6 +18333,15 @@ io.on('connection', socket => {
         const t = state.disc_timers.get(resolvedPlayerId);
         if (t) { clearTimeout(t); state.disc_timers.delete(resolvedPlayerId); }
         console.log(`[join_game] → joined as PLAYER | connected now: [${[...state.connected].join(', ')}]`);
+
+        // ── Cancel any pending no-show claims against this player ──────────        const appUrl = process.env.NEXT_PUBLIC_APP_URL;
+        if (appUrl) {
+          try {
+            await fetch(`${appUrl}/api/games/${game_id}/claim-no-show`, {
+              method: 'DELETE',
+            });
+          } catch {}
+        }
       }
 
       socket.emit('game_state', {
@@ -17660,20 +18356,19 @@ io.on('connection', socket => {
         black_name: state.black_name,
         white_rating: state.white_rating,
         black_rating: state.black_rating,
+        white_whatsapp: state.white_whatsapp,
+        black_whatsapp: state.black_whatsapp,
         your_player_id: effectiveIsSpectator ? null : resolvedPlayerId,
       });
 
       const hasWhite = state.connected.has(state.white_player_id);
       const hasBlack = state.connected.has(state.black_player_id);
-      console.log(`[join_game] start-check → status=${state.status} | hasWhite=${hasWhite} | hasBlack=${hasBlack}`);
 
       if (state.status === 'waiting' && hasWhite && hasBlack) {
         console.log(`[join_game] ✓✓✓ BOTH PLAYERS CONNECTED — starting game!`);
         state.status = 'active';
         state.last_move_ts = Date.now();
 
-        // Start per-game Stockfish engine — analyses starting position now,
-        // then each position as moves arrive. Review page will be instant at game end.
         initGameEngine(game_id).catch(e =>
           console.warn(`[join_game] Stockfish init failed (non-fatal):`, e?.message)
         );
@@ -17685,8 +18380,6 @@ io.on('connection', socket => {
           white_rating: state.white_rating, black_rating: state.black_rating,
         });
         await supabase.from('games').update({ is_live: true, game_state_fen: state.chess.fen() }).eq('id', game_id);
-      } else {
-        console.log(`[join_game] ✗ game NOT starting yet (waiting for the other player or state mismatch)`);
       }
 
       io.to(room).emit('player_joined', {
@@ -17699,6 +18392,7 @@ io.on('connection', socket => {
     }
   });
 
+  // ── Make move ────────────────────────────────────────────────────────────
   socket.on('make_move', async ({ game_id, move, player_id }) => {
     const state = activeGames.get(game_id);
     if (!state || state.status !== 'active') return;
@@ -17724,7 +18418,6 @@ io.on('connection', socket => {
         current_turn: state.chess.turn(), move_number: state.chess.history().length,
       });
 
-      // Queue the resulting position for incremental Stockfish analysis (fire-and-forget)
       const plyNum = state.chess.history().length;
       queuePosition(game_id, state.chess.fen(), plyNum);
 
@@ -17737,12 +18430,14 @@ io.on('connection', socket => {
     } catch { socket.emit('invalid_move', { reason: 'Error processing move' }); }
   });
 
+  // ── Resign ───────────────────────────────────────────────────────────────
   socket.on('resign', async ({ game_id, player_id }) => {
     const state = activeGames.get(game_id);
     if (!state || state.status !== 'active') return;
     await endGame(game_id, player_id === state.white_player_id ? '0-1' : '1-0', state.chess.pgn());
   });
 
+  // ── Draw ─────────────────────────────────────────────────────────────────
   socket.on('offer_draw', ({ game_id, player_id }) => {
     const state = activeGames.get(game_id);
     if (!state || state.status !== 'active') return;
@@ -17755,6 +18450,7 @@ io.on('connection', socket => {
     await endGame(game_id, '0.5-0.5', state.chess.pgn());
   });
 
+  // ── Claim timeout ────────────────────────────────────────────────────────
   socket.on('claim_timeout', async ({ game_id }) => {
     const state = activeGames.get(game_id);
     if (!state || state.status !== 'active') return;
@@ -17768,6 +18464,87 @@ io.on('connection', socket => {
     }
   });
 
+  // ── No-Show Claim ───────────────────────────────────────────────────────
+  socket.on('claim_no_show', async ({ game_id, player_id }) => {
+    const state = activeGames.get(game_id);
+    if (!state || state.status !== 'active') {
+      socket.emit('claim_denied', { reason: 'Game not active' });
+      return;
+    }
+    
+    const opponentId = player_id === state.white_player_id 
+      ? state.black_player_id 
+      : state.white_player_id;
+    
+    if (state.connected.has(opponentId)) {
+      socket.emit('claim_denied', { reason: 'Opponent is connected' });
+      return;
+    }
+
+    const appUrl = process.env.NEXT_PUBLIC_APP_URL;
+    if (!appUrl) {
+      socket.emit('claim_denied', { reason: 'Server configuration error' });
+      return;
+    }
+    
+    try {
+      const res = await fetch(`${appUrl}/api/games/${game_id}/claim-no-show`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ player_id }),
+      });
+      const data = await res.json();
+      
+      if (data.success) {
+        io.to(`game:${game_id}`).emit('no_show_claimed', {
+          claimed_by: player_id,
+          claimed_against: opponentId,
+          grace_ends_at: data.grace_ends_at,
+          grace_minutes: data.grace_minutes,
+        });
+      } else {
+        socket.emit('claim_denied', { reason: data.error });
+      }
+    } catch (err) {
+      socket.emit('claim_denied', { reason: 'Server error' });
+    }
+  });
+
+  // ── Nudge Opponent ──────────────────────────────────────────────────────
+  socket.on('nudge_opponent', async ({ game_id, player_id }) => {
+    const state = activeGames.get(game_id);
+    if (!state) return;
+    
+    const opponentId = player_id === state.white_player_id 
+      ? state.black_player_id 
+      : state.white_player_id;
+    
+    const appUrl = process.env.NEXT_PUBLIC_APP_URL;
+    if (!appUrl) return;
+    
+    try {
+      await fetch(`${appUrl}/api/notifications/send`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-internal-secret': process.env.INTERNAL_API_SECRET || '',
+        },
+        body: JSON.stringify({
+          player_id: opponentId,
+          type: 'nudge',
+          title: '👋 Nudge!',
+          message: 'Your opponent is waiting for you to join the game.',
+          game_id,
+        }),
+      });
+    } catch (err) {
+      console.warn('[nudge] Failed:', err?.message);
+    }
+    
+    io.to(`game:${game_id}`).emit('opponent_nudged', { by: player_id });
+  });
+
+  // ── Disconnect ───────────────────────────────────────────────────────────
   socket.on('disconnect', async () => {
     const { game_id, player_id, is_spectator } = socket.data || {};
     if (!game_id) return;
@@ -17794,7 +18571,6 @@ async function endGame(gameId, result, pgn) {
   state.status = 'ended'; state.result = result;
   state.disc_timers.forEach(t => clearTimeout(t));
 
-  // Stamp the Result header so the PGN shows the real result (not '*').
   state.chess.header('Result', result);
   const finalPgn = state.chess.pgn();
 
@@ -17805,9 +18581,6 @@ async function endGame(gameId, result, pgn) {
     competition_phase: state.competition_phase ?? null,
   });
 
-  // ── Flush incremental Stockfish analysis ──────────────────────────────────
-  // The engine ran during the game — just drain the last 1-2 pending positions,
-  // save analysis_json to DB (review page loads instantly), then run anticheat.
   const scorableResult = ['1-0', '0-1', '0.5-0.5'].includes(result);
   if (scorableResult && finalPgn) {
     flushGameAnalysis(gameId).then(async (analysisJson) => {
@@ -17837,9 +18610,6 @@ async function endGame(gameId, result, pgn) {
     destroyGameEngine(gameId);
   }
 
-  // ── STEP 1: Persist result + PGN directly to DB ───────────────────────────
-  // Must happen before the ratings API call so game data is always saved
-  // even if the ratings update fails (wrong secret, network error, etc.)
   const now = new Date().toISOString();
   const { error: saveErr } = await supabase.from('games').update({
     result,
@@ -17853,11 +18623,8 @@ async function endGame(gameId, result, pgn) {
     console.log(`[endGame] ✓ Game ${gameId} saved: result=${result}`);
   }
 
-  // ── STEP 2: Call ratings API (Glicko-2 update + standings) ────────────────
-  // Skip entirely for unrated casual games — is_rated is stored in game state
-  // from the game row's is_rated column.
   if (state.is_rated === false) {
-    console.log(`[endGame] Skipping ratings update — game is unrated (is_rated=false)`);
+    console.log(`[endGame] Skipping ratings update — game is unrated`);
   } else {
     const appUrl = process.env.NEXT_PUBLIC_APP_URL;
     const secret = process.env.INTERNAL_API_SECRET;
@@ -17877,7 +18644,6 @@ async function endGame(gameId, result, pgn) {
         if (!res.ok) {
           const body = await res.text().catch(() => '(no body)');
           console.error(`[endGame] ratings/update returned ${res.status}: ${body}`);
-          console.error('[endGame] Check that INTERNAL_API_SECRET matches on both Render and Vercel');
         } else {
           const data = await res.json().catch(() => null);
           console.log(`[endGame] ✓ Ratings updated. White: ${data?.white_change >= 0 ? '+' : ''}${Math.round(data?.white_change ?? 0)} | Black: ${data?.black_change >= 0 ? '+' : ''}${Math.round(data?.black_change ?? 0)}`);
@@ -17886,19 +18652,16 @@ async function endGame(gameId, result, pgn) {
         console.error('[endGame] ratings/update fetch threw:', err?.message);
       }
     }
-  }  // end else (is_rated)
+  }
 
   setTimeout(() => activeGames.delete(gameId), 30_000);
 }
 
 
 // ── Position evaluator (material + piece-square tables) ──────────────────────
-// Used to produce analysis_json without needing a Stockfish server process.
-// Scores are in centipawns, always from White's perspective (positive = white winning).
 
 const PIECE_VALUES = { p: 100, n: 320, b: 330, r: 500, q: 900, k: 0 };
 
-// Piece-square tables (rank 0=rank8 for white, indexed [rank][file])
 const PST = {
   p: [
     [  0,  0,  0,  0,  0,  0,  0,  0],
@@ -17974,7 +18737,6 @@ function evalPosition(chess) {
       const piece = board[r][f];
       if (!piece) continue;
       const val   = PIECE_VALUES[piece.type] ?? 0;
-      // PST: white pieces use table as-is (rank 0 = rank 8), black pieces mirror vertically
       const pstRow = piece.color === 'w' ? r : 7 - r;
       const bonus  = PST[piece.type]?.[pstRow]?.[f] ?? 0;
       score += piece.color === 'w' ? (val + bonus) : -(val + bonus);
@@ -17983,14 +18745,12 @@ function evalPosition(chess) {
   return score;
 }
 
-// Find best move via 1-ply search (good enough for identifying obvious blunders)
 function findBestMove(chess) {
   const moves = chess.moves({ verbose: true });
   if (!moves.length) return null;
   const isWhite = chess.turn() === 'w';
   let best = null;
   let bestScore = isWhite ? -Infinity : Infinity;
-  // Search up to 30 moves (covers captures + checks first by chess.js ordering)
   for (const move of moves.slice(0, 30)) {
     chess.move(move);
     const score = evalPosition(chess);
@@ -18004,20 +18764,8 @@ function findBestMove(chess) {
 }
 
 // ── Server-side anti-cheat analysis pipeline ─────────────────────────────────
-//
-// Called fire-and-forget after every rated, non-calibration game ends.
-// Runs real Stockfish (movetime 1500ms, MultiPV 3) server-side — players have
-// no involvement and cannot manipulate results.
-//
-// Flow:
-//   1. Analyse all positions with real Stockfish
-//   2. Save analysis_json to games table
-//   3. Compute engine correlation scores for both players
-//   4. If flagged: write conduct_violations, notify both players
-//   5. Admin confirms/dismisses via POST /api/admin/resolve-cheat
 
 const { computeCorrelationScore } = (() => {
-  // Inline the correlation scorer so the server doesn't import TS files
   const THRESHOLD = 75;
   function computeCorrelationScore(actualMoves, analysisJson, playingSide, player_id, game_id) {
     const byPly = new Map(analysisJson.map(a => [a.ply, a]));
@@ -18069,8 +18817,7 @@ async function runAnticheatPipeline(gameId, pgn, whiteName, blackName, whitePlay
     let analysisJson = prebuiltAnalysis;
 
     if (!analysisJson || analysisJson.length === 0) {
-      // Fallback batch analysis — only for games without incremental data
-      console.log(`[anticheat] No prebuilt analysis — running batch Stockfish depth ${20}`);
+      console.log(`[anticheat] No prebuilt analysis — running batch Stockfish depth 20`);
       analysisJson = await analyseGameServerSide(pgn);
       if (!analysisJson.length) { console.warn(`[anticheat] Empty analysis — skipping`); return; }
       await supabase.from('games').update({ analysis_json: analysisJson, analysis_complete: true }).eq('id', gameId);
@@ -18078,7 +18825,6 @@ async function runAnticheatPipeline(gameId, pgn, whiteName, blackName, whitePlay
       console.log(`[anticheat] Using prebuilt analysis (${analysisJson.length} positions)`);
     }
 
-    // ── Step 3: Compute correlation scores ───────────────────────────────────
     const chess = new Chess();
     chess.loadPgn(pgn);
     const uciMoves = chess.history({ verbose: true })
@@ -18090,14 +18836,12 @@ async function runAnticheatPipeline(gameId, pgn, whiteName, blackName, whitePlay
     console.log(`[anticheat] ${whiteName} (white): score=${whiteResult.correlation_score} verdict=${whiteResult.verdict}`);
     console.log(`[anticheat] ${blackName} (black): score=${blackResult.correlation_score} verdict=${blackResult.verdict}`);
 
-    // ── Step 4: Save scores ──────────────────────────────────────────────────
     await supabase.from('games').update({
       white_anticheat_score: whiteResult.correlation_score,
       black_anticheat_score: blackResult.correlation_score,
       anticheat_flagged:     whiteResult.flag || blackResult.flag,
     }).eq('id', gameId);
 
-    // ── Step 5: Flag handling ────────────────────────────────────────────────
     const flaggedPlayers = [
       whiteResult.flag ? { result: whiteResult, name: whiteName, opponentId: blackPlayerId, opponentName: blackName, side: 'white' } : null,
       blackResult.flag ? { result: blackResult, name: blackName, opponentId: whitePlayerId, opponentName: whiteName, side: 'black' } : null,
@@ -18108,7 +18852,6 @@ async function runAnticheatPipeline(gameId, pgn, whiteName, blackName, whitePlay
       const scoreLabel = `${fp.result.correlation_score}/100`;
       const topLabel   = `${fp.result.top1_matches}/${fp.result.move_count} engine top-1 matches`;
 
-      // Write conduct_violations record
       await supabase.from('conduct_violations').insert({
         player_id:      fp.result.player_id,
         violation_type: 'cheating_flag',
@@ -18117,7 +18860,6 @@ async function runAnticheatPipeline(gameId, pgn, whiteName, blackName, whitePlay
         game_id:        gameId,
       });
 
-      // Notify the flagged player
       await supabase.from('notifications').insert({
         player_id: fp.result.player_id,
         type:      'admin_action',
@@ -18128,7 +18870,6 @@ async function runAnticheatPipeline(gameId, pgn, whiteName, blackName, whitePlay
         game_id: gameId,
       });
 
-      // Notify the opponent — they deserve to know their result may be in question
       await supabase.from('notifications').insert({
         player_id: fp.opponentId,
         type:      'admin_action',
@@ -18160,9 +18901,7 @@ app.post('/notify-challenge-accepted', (req, res) => {
   if (!challenge_id || !game_id) {
     return res.status(400).json({ error: 'challenge_id and game_id required' });
   }
-  // Push to everyone waiting in this challenge room
   io.to(`challenge:${challenge_id}`).emit('challenge_accepted', { game_id });
-  // Clean up room after a short delay
   setTimeout(() => challengeRooms.delete(challenge_id), 10_000);
   console.log(`[challenge] Notified challenge:${challenge_id} → game:${game_id}`);
   res.json({ ok: true, notified: challengeRooms.get(challenge_id)?.size ?? 0 });
@@ -18175,9 +18914,6 @@ app.get('/health', (req, res) => res.json({
   clients: io.engine.clientsCount
 }));
 
-// ── Debug: inspect any active game's state ───────────────────────────────────
-// Call GET /debug/game/<game_id> to see exactly what player IDs are stored
-// vs what's in state.connected. No secret required — remove after debugging.
 app.get('/debug/game/:gameId', (req, res) => {
   const { gameId } = req.params;
   const state = activeGames.get(gameId);
@@ -18200,8 +18936,6 @@ app.get('/debug/game/:gameId', (req, res) => {
     spectators: state.spectators.size,
     has_white_connected: state.connected.has(state.white_player_id),
     has_black_connected: state.connected.has(state.black_player_id),
-    white_match: state.connected.has(state.white_player_id),
-    black_match: state.connected.has(state.black_player_id),
     fen: state.chess.fen(),
   });
 });
@@ -18213,14 +18947,19 @@ httpServer.listen(PORT, () => console.log(`[SS4] Game server on :${PORT}`));
 <file path="src/app/play/[gameId]/page.tsx">
 "use client";
 import { SoundToggle } from "@/components/chess/SoundToggle";
+import { CountdownBadge } from "@/components/ui/CountdownBadge";
 import { useSound } from "@/hooks/useSound";
 import { supabase } from "@/lib/supabase";
 import { Chess } from "chess.js";
 import {
+  AlertTriangle,
+  Bell,
+  Clock as ClockIcon,
   Download,
   Eye,
   Flag,
   Handshake,
+  MessageCircle,
   RotateCcw,
   ShieldAlert,
 } from "lucide-react";
@@ -18228,12 +18967,12 @@ import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { io, Socket } from "socket.io-client";
 
 function isTouchDevice() {
   if (typeof window === "undefined") return false;
   return window.matchMedia("(pointer: coarse)").matches;
 }
-import { io, Socket } from "socket.io-client";
 
 const Chessboard = dynamic(
   () => import("react-chessboard").then((m) => m.Chessboard),
@@ -18334,25 +19073,28 @@ export default function GameRoomPage() {
   const [drawOffered, setDrawOffered] = useState(false);
   const [spectators, setSpectators] = useState(0);
   const { play, enabled: soundEnabled, toggle: toggleSound } = useSound();
-  // Keep a ref to always-current `play` so socket handlers (set up once, deps=[])
-  // don't capture a stale closure — toggling sound takes effect on next move.
   const playRef = useRef(play);
-  useEffect(() => { playRef.current = play; }, [play]);
+  useEffect(() => {
+    playRef.current = play;
+  }, [play]);
 
   // TAP-TO-MOVE STATE
   const [moveFrom, setMoveFrom] = useState<any>(null);
   const [optionSquares, setOptionSquares] = useState({});
-  // Last move highlighting — shown on board so players can spot opponent's move
-  const [lastMoveSquares, setLastMoveSquares] = useState<Record<string, React.CSSProperties>>({});
+  const [lastMoveSquares, setLastMoveSquares] = useState<
+    Record<string, React.CSSProperties>
+  >({});
 
-  // CONFIRM MOVE STATE — chess.com-style: preview move on board, confirm before sending
+  // CONFIRM MOVE STATE
   const [confirmMove, setConfirmMove] = useState<boolean>(() => {
-    if (typeof window === 'undefined') return false;
-    return localStorage.getItem('confirmMove') === 'true';
+    if (typeof window === "undefined") return false;
+    return localStorage.getItem("confirmMove") === "true";
   });
-  // pendingMove: a move the player has dragged/clicked but not yet confirmed
-  const [pendingMove, setPendingMove] = useState<{ from: string; to: string; promotion: string } | null>(null);
-  // pendingFen: board position AFTER the pending move (for display only, not sent to server yet)
+  const [pendingMove, setPendingMove] = useState<{
+    from: string;
+    to: string;
+    promotion: string;
+  } | null>(null);
   const [pendingFen, setPendingFen] = useState<string | null>(null);
 
   const socketRef = useRef<Socket | null>(null);
@@ -18372,224 +19114,308 @@ export default function GameRoomPage() {
 
   const myPlayerIdRef = useRef<string | null>(null);
 
+  // WhatsApp numbers for opponent contact
+  const [whiteWhatsapp, setWhiteWhatsapp] = useState<string | null>(null);
+  const [blackWhatsapp, setBlackWhatsapp] = useState<string | null>(null);
+
+  // Nudge cooldown
+  const [nudgeCooldown, setNudgeCooldown] = useState(0);
+
+  // No-show claim state
+  const [claimPending, setClaimPending] = useState(false);
+  const [claimGraceEndsAt, setClaimGraceEndsAt] = useState<string | null>(null);
+  const [claimGraceMinutes, setClaimGraceMinutes] = useState(0);
+  const [claimCountdown, setClaimCountdown] = useState(0);
+
+  // Round window for countdown
+  const [roundWindow, setRoundWindow] = useState<any>(null);
+
+  // Nudge cooldown timer
+  useEffect(() => {
+    if (nudgeCooldown <= 0) return;
+    const timer = setInterval(() => setNudgeCooldown((c) => c - 1), 1000);
+    return () => clearInterval(timer);
+  }, [nudgeCooldown]);
+
+  // Grace period countdown
+  useEffect(() => {
+    if (!claimGraceEndsAt) {
+      setClaimCountdown(0);
+      return;
+    }
+    const update = () => {
+      const remaining = Math.max(
+        0,
+        Math.floor((new Date(claimGraceEndsAt).getTime() - Date.now()) / 1000),
+      );
+      setClaimCountdown(remaining);
+    };
+    update();
+    const timer = setInterval(update, 1000);
+    return () => clearInterval(timer);
+  }, [claimGraceEndsAt]);
+
   useEffect(() => {
     let sock: Socket;
 
     async function init() {
       try {
-        // ── Step 1: Get auth identity ─────────────────────────────────────────
-        // getSession() reads from browser cookies (no network round-trip to Supabase).
-        // getUser() makes a network call to /auth/v1/user on every mount which can
-        // hang on slow networks or Render free-tier cold starts, keeping status=loading.
-        const { data: { session } } = await supabase.auth.getSession();
-        if (!session?.user) { setStatus('unauthorized'); return; }
+        const {
+          data: { session },
+        } = await supabase.auth.getSession();
+        if (!session?.user) {
+          setStatus("unauthorized");
+          return;
+        }
         const user = session.user;
 
-        // ── Step 2: Resolve player_id on the CLIENT before connecting ─────────
-        // If we rely purely on the server to resolve auth_user_id → player_id,
-        // legacy players whose auth_user_id column is NULL in the DB join as
-        // spectators — so state.connected never has both players → game_started
-        // never fires. Resolve it here once so we always pass a concrete player_id.
         let resolvedPlayerId: string | null =
-          typeof window !== 'undefined' ? localStorage.getItem('player_id') : null;
+          typeof window !== "undefined"
+            ? localStorage.getItem("player_id")
+            : null;
 
         if (!resolvedPlayerId) {
-          // auth_user_id column may be NULL for players created before it was added.
-          // Try the fast path first; fall back to looking up by supabase uid column.
           const { data: byAuthId } = await supabase
-            .from('players')
-            .select('id')
-            .eq('auth_user_id', user.id)
+            .from("players")
+            .select("id")
+            .eq("auth_user_id", user.id)
             .maybeSingle();
 
           if (byAuthId?.id) {
             resolvedPlayerId = byAuthId.id;
           } else {
-            // Legacy players: auth_user_id column is NULL. Try matching on supabase_uid
-            // or any column the app uses to link auth → player. Worst case, the server
-            // will resolve it and echo back your_player_id in game_state.
-            console.warn('[init] auth_user_id lookup returned nothing — will rely on server resolution');
+            console.warn(
+              "[init] auth_user_id lookup returned nothing — will rely on server resolution",
+            );
           }
 
           if (resolvedPlayerId) {
-            localStorage.setItem('player_id', resolvedPlayerId);
+            localStorage.setItem("player_id", resolvedPlayerId);
           }
         }
 
         myPlayerIdRef.current = resolvedPlayerId;
 
-        // ── Step 3: Connect to socket server ──────────────────────────────────
         const socketUrl = process.env.NEXT_PUBLIC_SOCKET_URL;
         if (!socketUrl) {
-          console.error('[socket] NEXT_PUBLIC_SOCKET_URL is not set — check Vercel env vars');
+          console.error(
+            "[socket] NEXT_PUBLIC_SOCKET_URL is not set — check Vercel env vars",
+          );
         }
 
-        sock = io(socketUrl || 'http://localhost:3001', {
-          transports: ['websocket', 'polling'],
+        sock = io(socketUrl || "http://localhost:3001", {
+          transports: ["websocket", "polling"],
           timeout: 20000,
           reconnectionAttempts: 5,
           reconnectionDelay: 2000,
         });
         socketRef.current = sock;
 
-        sock.on('connect', () => {
-          console.log('[socket] connected | game:', gameId, '| auth:', user.id, '| player:', resolvedPlayerId);
-          sock.emit('join_game', {
+        sock.on("connect", () => {
+          console.log(
+            "[socket] connected | game:",
+            gameId,
+            "| auth:",
+            user.id,
+            "| player:",
+            resolvedPlayerId,
+          );
+          sock.emit("join_game", {
             game_id: gameId,
-            auth_user_id: user.id,       // server uses this to verify identity
-            player_id: resolvedPlayerId, // already resolved — server falls back to this
+            auth_user_id: user.id,
+            player_id: resolvedPlayerId,
             is_spectator: false,
           });
         });
 
-        sock.on('connect_error', (err) => {
-          console.error('[socket] connect_error:', err.message);
-          // Don't leave user stuck on "Loading" — show "Waiting" so they know something happened
-          setStatus('waiting');
+        sock.on("connect_error", (err) => {
+          console.error("[socket] connect_error:", err.message);
+          setStatus("waiting");
         });
 
-      sock.on("game_state", (d) => {
-        if (d.pgn) chess.loadPgn(d.pgn);
-        setFen(d.fen || chess.fen());
-        setMoves(chess.history());
-        setStatus(d.status === "active" ? "active" : "waiting");
-        setSpectators(d.spectator_count || 0);
+        sock.on("game_state", (d) => {
+          if (d.pgn) chess.loadPgn(d.pgn);
+          setFen(d.fen || chess.fen());
+          setMoves(chess.history());
+          setStatus(d.status === "active" ? "active" : "waiting");
+          setSpectators(d.spectator_count || 0);
+          setWhiteWhatsapp(d.white_whatsapp || null);
+          setBlackWhatsapp(d.black_whatsapp || null);
 
-        // Server echoes back our resolved player_id — use it as the source of truth.
-        // This handles the case where the client-side auth_user_id lookup would have
-        // failed (e.g., auth_user_id was null for legacy players in the DB).
-        if (d.your_player_id) {
-          myPlayerIdRef.current = d.your_player_id;
-          localStorage.setItem('player_id', d.your_player_id);
-        }
+          if (d.your_player_id) {
+            myPlayerIdRef.current = d.your_player_id;
+            localStorage.setItem("player_id", d.your_player_id);
+          }
 
-        const myId = myPlayerIdRef.current;
-        if (myId && d.white_player_id && d.black_player_id) {
+          const myId = myPlayerIdRef.current;
+          if (myId && d.white_player_id && d.black_player_id) {
+            if (myId === d.white_player_id) myColorRef.current = "white";
+            else if (myId === d.black_player_id) myColorRef.current = "black";
+          }
+          setWhite((p) => ({
+            ...p,
+            name: d.white_name || p.name,
+            rating: d.white_rating || p.rating,
+            timeMs: d.white_time,
+            isActive: d.current_turn === "w" && d.status === "active",
+          }));
+          setBlack((p) => ({
+            ...p,
+            name: d.black_name || p.name,
+            rating: d.black_rating || p.rating,
+            timeMs: d.black_time,
+            isActive: d.current_turn === "b" && d.status === "active",
+          }));
+        });
+
+        sock.on("game_started", (d) => {
+          setStatus("active");
+          const myId = myPlayerIdRef.current;
           if (myId === d.white_player_id) myColorRef.current = "white";
-          else if (myId === d.black_player_id) myColorRef.current = "black";
-        }
-        setWhite((p) => ({
-          ...p,
-          name:   d.white_name   || p.name,
-          rating: d.white_rating || p.rating,
-          timeMs: d.white_time,
-          isActive: d.current_turn === "w" && d.status === "active",
-        }));
-        setBlack((p) => ({
-          ...p,
-          name:   d.black_name   || p.name,
-          rating: d.black_rating || p.rating,
-          timeMs: d.black_time,
-          isActive: d.current_turn === "b" && d.status === "active",
-        }));
-      });
+          if (myId === d.black_player_id) myColorRef.current = "black";
+          setWhite((p) => ({
+            ...p,
+            name: d.white_name || p.name,
+            rating: d.white_rating || p.rating,
+            timeMs: d.white_time,
+            isActive: true,
+          }));
+          setBlack((p) => ({
+            ...p,
+            name: d.black_name || p.name,
+            rating: d.black_rating || p.rating,
+            timeMs: d.black_time,
+            isActive: false,
+          }));
+        });
 
-      sock.on("game_started", (d) => {
-        setStatus("active");
-        // Use ref here — myPlayerIdRef is already populated from game_state which
-        // arrives just before this event. Never use a stale closure variable.
-        const myId = myPlayerIdRef.current;
-        if (myId === d.white_player_id) myColorRef.current = "white";
-        if (myId === d.black_player_id) myColorRef.current = "black";
-        setWhite((p) => ({
-          ...p,
-          name:   d.white_name   || p.name,
-          rating: d.white_rating || p.rating,
-          timeMs: d.white_time, isActive: true,
-        }));
-        setBlack((p) => ({
-          ...p,
-          name:   d.black_name   || p.name,
-          rating: d.black_rating || p.rating,
-          timeMs: d.black_time, isActive: false,
-        }));
-      });
-
-      sock.on("move_made", (d) => {
-        // chess.load(fen) only loads a position — it wipes all move history.
-        // chess.loadPgn(pgn) restores the full game including all past moves,
-        // which is what we need for move history display and sound detection.
-        if (d.pgn) {
-          chess.loadPgn(d.pgn);
-        } else {
-          // Fallback for older server versions that don't send pgn
-          chess.load(d.fen);
-        }
-        const history = chess.history({ verbose: true });
-        const lastMove = history[history.length - 1];
-        if (lastMove?.promotion) playRef.current("promote");
-        else if (lastMove?.flags?.includes("k") || lastMove?.flags?.includes("q")) playRef.current("castle");
-        else if (chess.isCheck()) playRef.current("check");
-        else if (lastMove?.captured) playRef.current("capture");
-        else playRef.current("move");
-        setFen(chess.fen());
-        setMoves(chess.history());
-        setWhite((p) => ({ ...p, timeMs: d.white_time, isActive: d.current_turn === "w" }));
-        setBlack((p) => ({ ...p, timeMs: d.black_time, isActive: d.current_turn === "b" }));
-        // Highlight the from/to squares of the last move
-        if (lastMove) {
-          setLastMoveSquares({
-            [lastMove.from]: { backgroundColor: 'rgba(255, 255, 0, 0.25)' },
-            [lastMove.to]:   { backgroundColor: 'rgba(255, 255, 0, 0.35)' },
-          });
-        }
-        // Clear any pending confirm-move state when a move_made arrives
-        setPendingMove(null);
-        setPendingFen(null);
-      });
-
-      sock.on("game_ended", async (d) => {
-        setStatus("ended");
-        setResult(d.result);
-        if (d.pgn) {
-          setFinalPgn(d.pgn);
-          try {
+        sock.on("move_made", (d) => {
+          if (d.pgn) {
             chess.loadPgn(d.pgn);
-            setFen(chess.fen());
-            setMoves(chess.history());
-          } catch {}
-        }
-        setWhite((p) => ({ ...p, isActive: false }));
-        setBlack((p) => ({ ...p, isActive: false }));
-        if (myColorRef.current) {
-          const iWon = (d.result === "1-0" && myColorRef.current === "white") || (d.result === "0-1" && myColorRef.current === "black");
-          if (iWon) playRef.current("win");
-          else if (d.result === "0.5-0.5") playRef.current("draw");
-          else playRef.current("loss");
-        }
-        // Anti-cheat analysis runs server-side (fire-and-forget in socket-server.js).
-        // No client-side Stockfish needed here — results appear in DB when ready.
-      });
-      sock.on("draw_offered", ({ by_player_id }) => {
-        if (by_player_id !== myPlayerIdRef.current) setDrawOffered(true);
-      });
-      sock.on("spectator_count", ({ count }) => setSpectators(count));
-      sock.on("error", ({ message }) => {
-        console.error("[socket error]", message);
-        setStatus("ended");
-        setResult(message || "Server error");
-      });
-      sock.on("game_already_finished", ({ result: r, pgn: finishedPgn }) => {
-        setStatus("ended");
-        setResult(r);
-        if (finishedPgn) {
-          try {
-            chess.loadPgn(finishedPgn);
-            setFen(chess.fen());
-            setMoves(chess.history());
-            setFinalPgn(finishedPgn);
-          } catch {}
-        }
-      });
+          } else {
+            chess.load(d.fen);
+          }
+          const history = chess.history({ verbose: true });
+          const lastMove = history[history.length - 1];
+          if (lastMove?.promotion) playRef.current("promote");
+          else if (
+            lastMove?.flags?.includes("k") ||
+            lastMove?.flags?.includes("q")
+          )
+            playRef.current("castle");
+          else if (chess.isCheck()) playRef.current("check");
+          else if (lastMove?.captured) playRef.current("capture");
+          else playRef.current("move");
+          setFen(chess.fen());
+          setMoves(chess.history());
+          setWhite((p) => ({
+            ...p,
+            timeMs: d.white_time,
+            isActive: d.current_turn === "w",
+          }));
+          setBlack((p) => ({
+            ...p,
+            timeMs: d.black_time,
+            isActive: d.current_turn === "b",
+          }));
+          if (lastMove) {
+            setLastMoveSquares({
+              [lastMove.from]: { backgroundColor: "rgba(255, 255, 0, 0.25)" },
+              [lastMove.to]: { backgroundColor: "rgba(255, 255, 0, 0.35)" },
+            });
+          }
+          setPendingMove(null);
+          setPendingFen(null);
+        });
 
+        sock.on("game_ended", async (d) => {
+          setStatus("ended");
+          setResult(d.result);
+          if (d.pgn) {
+            setFinalPgn(d.pgn);
+            try {
+              chess.loadPgn(d.pgn);
+              setFen(chess.fen());
+              setMoves(chess.history());
+            } catch {}
+          }
+          setWhite((p) => ({ ...p, isActive: false }));
+          setBlack((p) => ({ ...p, isActive: false }));
+          if (myColorRef.current) {
+            const iWon =
+              (d.result === "1-0" && myColorRef.current === "white") ||
+              (d.result === "0-1" && myColorRef.current === "black");
+            if (iWon) playRef.current("win");
+            else if (d.result === "0.5-0.5") playRef.current("draw");
+            else playRef.current("loss");
+          }
+        });
+        sock.on("draw_offered", ({ by_player_id }) => {
+          if (by_player_id !== myPlayerIdRef.current) setDrawOffered(true);
+        });
+        sock.on("spectator_count", ({ count }) => setSpectators(count));
+        sock.on("error", ({ message }) => {
+          console.error("[socket error]", message);
+          setStatus("ended");
+          setResult(message || "Server error");
+        });
+        sock.on("game_already_finished", ({ result: r, pgn: finishedPgn }) => {
+          setStatus("ended");
+          setResult(r);
+          if (finishedPgn) {
+            try {
+              chess.loadPgn(finishedPgn);
+              setFen(chess.fen());
+              setMoves(chess.history());
+              setFinalPgn(finishedPgn);
+            } catch {}
+          }
+        });
+
+        // ── No-show and nudge events ───────────────────────────────────────
+        sock.on(
+          "no_show_claimed",
+          ({ claimed_by, grace_ends_at, grace_minutes }) => {
+            setClaimPending(true);
+            setClaimGraceEndsAt(grace_ends_at);
+            setClaimGraceMinutes(grace_minutes);
+          },
+        );
+        sock.on("opponent_nudged", () => {
+          // Optional subtle confirmation
+        });
+        sock.on("claim_denied", ({ reason }) => {
+          console.warn("[claim] denied:", reason);
+        });
       } catch (err: any) {
-        // Catch any unhandled error in init() so status never stays stuck at "loading"
-        console.error('[init] unhandled error:', err?.message ?? err);
-        setStatus('waiting');
+        console.error("[init] unhandled error:", err?.message ?? err);
+        setStatus("waiting");
       }
     }
 
     init();
+
+    // Fetch round window for countdown
+    async function fetchRoundWindow() {
+      try {
+        const { data: game } = await supabase
+          .from("games")
+          .select("season, round, league")
+          .eq("id", gameId)
+          .single();
+        if (game?.season && game?.round) {
+          const { data: rw } = await supabase
+            .from("round_windows")
+            .select("*")
+            .eq("season", game.season)
+            .eq("round", game.round)
+            .eq("league", game.league)
+            .single();
+          if (rw) setRoundWindow(rw);
+        }
+      } catch {}
+    }
+    fetchRoundWindow();
 
     return () => {
       sock?.disconnect();
@@ -18619,32 +19445,45 @@ export default function GameRoomPage() {
     return true;
   }
 
-  // Helper: try a move locally (without sending to server) to get pendingFen
-  function tryMoveLocally(from: string, to: string, promotion = 'q'): string | null {
+  function tryMoveLocally(
+    from: string,
+    to: string,
+    promotion = "q",
+  ): string | null {
     const tempChess = new Chess(chess.fen());
     try {
       const result = tempChess.move({ from, to, promotion });
       return result ? tempChess.fen() : null;
-    } catch { return null; }
+    } catch {
+      return null;
+    }
   }
 
-  function emitMove(from: string, to: string, promotion = 'q') {
+  function emitMove(from: string, to: string, promotion = "q") {
     const sock = socketRef.current;
     const myPlayerId = myPlayerIdRef.current;
-    sock?.emit('make_move', { game_id: gameId, player_id: myPlayerId, move: { from, to, promotion } });
+    sock?.emit("make_move", {
+      game_id: gameId,
+      player_id: myPlayerId,
+      move: { from, to, promotion },
+    });
   }
 
   // TAP-TO-MOVE HANDLER
   function onSquareClick(square: any) {
     const myPlayerId = myPlayerIdRef.current;
-    if (status !== 'active' || !myPlayerId) return;
+    if (status !== "active" || !myPlayerId) return;
     const isMyTurn =
-      (chess.turn() === 'w' && myColorRef.current === 'white') ||
-      (chess.turn() === 'b' && myColorRef.current === 'black');
+      (chess.turn() === "w" && myColorRef.current === "white") ||
+      (chess.turn() === "b" && myColorRef.current === "black");
     if (!isMyTurn) return;
 
-    // If there's a pending move, clicking elsewhere cancels it
-    if (pendingMove) { setPendingMove(null); setPendingFen(null); setMoveFrom(null); return; }
+    if (pendingMove) {
+      setPendingMove(null);
+      setPendingFen(null);
+      setMoveFrom(null);
+      return;
+    }
 
     if (!moveFrom) {
       const hasOptions = getMoveOptions(square);
@@ -18653,10 +19492,14 @@ export default function GameRoomPage() {
     }
 
     const newFen = tryMoveLocally(moveFrom, square);
-    if (!newFen) { setMoveFrom(null); setOptionSquares({}); return; }
+    if (!newFen) {
+      setMoveFrom(null);
+      setOptionSquares({});
+      return;
+    }
 
     if (confirmMove) {
-      setPendingMove({ from: moveFrom, to: square, promotion: 'q' });
+      setPendingMove({ from: moveFrom, to: square, promotion: "q" });
       setPendingFen(newFen);
     } else {
       emitMove(moveFrom, square);
@@ -18669,25 +19512,49 @@ export default function GameRoomPage() {
     (src: string, tgt: string) => {
       const myPlayerId = myPlayerIdRef.current;
       const sock = socketRef.current;
-      if (status !== 'active' || !sock) return false;
+      if (status !== "active" || !sock) return false;
       const isMyTurn =
-        (chess.turn() === 'w' && myColorRef.current === 'white') ||
-        (chess.turn() === 'b' && myColorRef.current === 'black');
+        (chess.turn() === "w" && myColorRef.current === "white") ||
+        (chess.turn() === "b" && myColorRef.current === "black");
       if (!isMyTurn) return false;
 
       const newFen = tryMoveLocally(src, tgt);
       if (!newFen) return false;
 
       if (confirmMove) {
-        setPendingMove({ from: src, to: tgt, promotion: 'q' });
+        setPendingMove({ from: src, to: tgt, promotion: "q" });
         setPendingFen(newFen);
       } else {
         emitMove(src, tgt);
       }
       return true;
     },
-    [status, chess, gameId, confirmMove],  // eslint-disable-line react-hooks/exhaustive-deps
+    [status, chess, gameId, confirmMove],
   );
+
+  // ── Nudge opponent ─────────────────────────────────────────────────────
+  const nudgeOpponent = () => {
+    if (nudgeCooldown > 0) return;
+    socketRef.current?.emit("nudge_opponent", {
+      game_id: gameId,
+      player_id: myPlayerIdRef.current,
+    });
+    setNudgeCooldown(60);
+  };
+
+  // ── Claim no-show ──────────────────────────────────────────────────────
+  const claimNoShow = () => {
+    if (
+      !confirm(
+        "Claim opponent as no-show? They will have time to join before automatic forfeit.",
+      )
+    )
+      return;
+    socketRef.current?.emit("claim_no_show", {
+      game_id: gameId,
+      player_id: myPlayerIdRef.current,
+    });
+  };
 
   if (status === "unauthorized")
     return (
@@ -18734,23 +19601,31 @@ export default function GameRoomPage() {
         </div>
         <div className="flex items-center gap-2">
           {spectators > 0 && (
-            <a href={`/game/${gameId}/spectate`} target="_blank"
-               className="flex items-center gap-1.5 text-xs text-ink-400 hover:text-chalk transition-colors">
+            <a
+              href={`/game/${gameId}/spectate`}
+              target="_blank"
+              className="flex items-center gap-1.5 text-xs text-ink-400 hover:text-chalk transition-colors"
+            >
               <Eye size={12} /> {spectators} watching
             </a>
           )}
-          {/* Confirm move toggle — persisted to localStorage */}
           {!isSpectator && (
             <button
-              title={confirmMove ? 'Confirm move: ON (click to disable)' : 'Confirm move: OFF (click to enable)'}
+              title={
+                confirmMove
+                  ? "Confirm move: ON (click to disable)"
+                  : "Confirm move: OFF (click to enable)"
+              }
               onClick={() => {
                 const next = !confirmMove;
                 setConfirmMove(next);
-                localStorage.setItem('confirmMove', String(next));
-                // Cancel any pending move when toggling off
-                if (!next) { setPendingMove(null); setPendingFen(null); }
+                localStorage.setItem("confirmMove", String(next));
+                if (!next) {
+                  setPendingMove(null);
+                  setPendingFen(null);
+                }
               }}
-              className={`text-xs px-2 py-1 rounded border transition-colors ${confirmMove ? 'border-gold text-gold bg-gold/10' : 'border-ink-600 text-ink-400 hover:text-chalk'}`}
+              className={`text-xs px-2 py-1 rounded border transition-colors ${confirmMove ? "border-gold text-gold bg-gold/10" : "border-ink-600 text-ink-400 hover:text-chalk"}`}
             >
               ✓ Confirm
             </button>
@@ -18758,6 +19633,13 @@ export default function GameRoomPage() {
           <SoundToggle enabled={soundEnabled} onToggle={toggleSound} />
         </div>
       </div>
+
+      {/* ── Round window countdown ─────────────────────────────────────── */}
+      {roundWindow && (
+        <div className="mb-3">
+          <CountdownBadge window={roundWindow} />
+        </div>
+      )}
 
       {drawOffered && (
         <div className="mb-4 p-4 rounded-xl bg-gold/10 border border-gold/30 flex items-center justify-between">
@@ -18790,7 +19672,6 @@ export default function GameRoomPage() {
               : { ...white, color: "white" })}
           />
 
-          {/* UPDATED: touch-none wrapper stops scrolling during piece movement */}
           <div className="board-wrapper touch-none select-none relative">
             {typeof window !== "undefined" && (
               <Chessboard
@@ -18801,18 +19682,26 @@ export default function GameRoomPage() {
                 boardOrientation={orientation}
                 customDarkSquareStyle={{ backgroundColor: "#4a6080" }}
                 customLightSquareStyle={{ backgroundColor: "#b0bcce" }}
-                arePiecesDraggable={status === "active" && !isSpectator && !touchMode && !pendingMove}
+                arePiecesDraggable={
+                  status === "active" &&
+                  !isSpectator &&
+                  !touchMode &&
+                  !pendingMove
+                }
                 animationDuration={150}
               />
             )}
           </div>
 
-          {/* Confirm move overlay — appears after dragging/clicking when confirmMove is on */}
           {pendingMove && (
             <div className="flex gap-2 justify-center">
               <button
                 onClick={() => {
-                  emitMove(pendingMove.from, pendingMove.to, pendingMove.promotion);
+                  emitMove(
+                    pendingMove.from,
+                    pendingMove.to,
+                    pendingMove.promotion,
+                  );
                   setPendingMove(null);
                   setPendingFen(null);
                 }}
@@ -18821,7 +19710,10 @@ export default function GameRoomPage() {
                 ✓ Confirm Move
               </button>
               <button
-                onClick={() => { setPendingMove(null); setPendingFen(null); }}
+                onClick={() => {
+                  setPendingMove(null);
+                  setPendingFen(null);
+                }}
                 className="btn-ghost flex-1 text-sm gap-1.5"
               >
                 ✕ Cancel
@@ -18872,9 +19764,6 @@ export default function GameRoomPage() {
               </Link>
               <button
                 onClick={() => {
-                  // Use the PGN received from the server — it has correct headers
-                  // (player names, Elo, date, result). Falling back to chess.pgn()
-                  // would produce '[Result "*"]' and no player names.
                   const pgn = finalPgn ?? chess.pgn();
                   const blob = new Blob([pgn], { type: "text/plain" });
                   const a = document.createElement("a");
@@ -18890,6 +19779,65 @@ export default function GameRoomPage() {
           )}
         </div>
         <div className="space-y-4">
+          {/* ── Opponent Contact & Actions ────────────────────────────── */}
+          <div className="card p-4 space-y-3">
+            <div className="section-label mb-1">Opponent Contact</div>
+
+            {/* WhatsApp link */}
+            {(myColorRef.current === "white"
+              ? blackWhatsapp
+              : whiteWhatsapp) && (
+              <a
+                href={`https://wa.me/${(myColorRef.current === "white" ? blackWhatsapp : whiteWhatsapp)?.replace(/\+/g, "")}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="flex items-center gap-2 text-sm text-green-400 hover:text-green-300 py-1.5 px-3 rounded-lg bg-green-400/5 border border-green-400/10 w-full"
+              >
+                <MessageCircle size={14} />
+                Message on WhatsApp
+              </a>
+            )}
+
+            {/* Nudge button */}
+            {!isSpectator && status === "active" && (
+              <button
+                onClick={nudgeOpponent}
+                disabled={nudgeCooldown > 0}
+                className="btn-ghost w-full text-sm gap-2"
+              >
+                <Bell size={14} />
+                {nudgeCooldown > 0
+                  ? `Nudge again in ${nudgeCooldown}s`
+                  : "Nudge Opponent"}
+              </button>
+            )}
+
+            {/* No-show claim button */}
+            {!isSpectator && status === "active" && !claimPending && (
+              <button
+                onClick={claimNoShow}
+                className="btn-danger w-full text-sm gap-2"
+              >
+                <AlertTriangle size={14} />
+                Opponent No-Show
+              </button>
+            )}
+
+            {/* Grace period countdown */}
+            {claimPending && claimCountdown > 0 && (
+              <div className="p-3 rounded-lg bg-amber-900/20 border border-amber-700/50 text-center">
+                <ClockIcon
+                  size={14}
+                  className="inline-block mr-2 text-amber-400"
+                />
+                <span className="text-xs text-amber-300">
+                  Grace period: {Math.floor(claimCountdown / 60)}:
+                  {(claimCountdown % 60).toString().padStart(2, "0")}
+                </span>
+              </div>
+            )}
+          </div>
+
           <div className="card p-4">
             <div className="section-label mb-3">Move History</div>
             <MoveHistory moves={moves} />
