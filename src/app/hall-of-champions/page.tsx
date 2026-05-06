@@ -189,11 +189,11 @@ export default async function HallOfChampionsPage() {
           <div className="flex items-center gap-3 mb-6">
             <h2 className="font-display text-3xl font-bold text-chalk">Season 1 Pioneers</h2>
             <div className="h-px flex-1 bg-ink-700" />
-            <span className="text-xs text-ink-500">{pioneers.length} founders</span>
+            <span className="text-xs text-ink-500">{pioneers.length} pioneers</span>
           </div>
           <div className="card p-8">
             <p className="text-ink-400 text-sm mb-6 text-center max-w-lg mx-auto text-balance">
-              These players were present at the founding of the SS4 Chess League. Their Pioneer badge is permanent — it will never be re-awarded to anyone else.
+              These players were present at the beginning of the first SS4 Chess League Season. Their Pioneer badge is permanent — it will never be re-awarded to anyone else.
             </p>
             <div className="flex flex-wrap gap-3 justify-center">
               {pioneers.map((b: any) => (

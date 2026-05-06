@@ -89,7 +89,9 @@ export default async function HomePage() {
     <div className="max-w-7xl mx-auto px-4 py-10 space-y-12">
       {/* Hero */}
       <div className="text-center space-y-4 py-10 bg-board-pattern rounded-2xl border border-ink-700">
-        <div className="text-5xl">♟</div>
+        <div className="flex justify-center mb-4">
+          <img src="/logo.png" alt="SS4 Chess League" className="h-20 w-auto" />
+        </div>
         <h1 className="font-display text-4xl md:text-5xl font-bold text-chalk">
           SS4 Chess League
         </h1>
