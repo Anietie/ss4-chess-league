@@ -14,7 +14,7 @@
 'use strict';
 
 const { Chess } = require('chess.js');
-const Stockfish = require('stockfish');
+const Stockfish = require('../public/stockfish.js');
 
 const DEPTH   = 20;
 const MULTIPV = 3;
