@@ -114,3 +114,25 @@ export async function POST(req: NextRequest) {
  
   return NextResponse.json({ error: 'Unknown action' }, { status: 400 });
 }
+
+export async function GET(req: NextRequest) {
+  if (req.headers.get('x-admin-secret') !== process.env.ADMIN_SECRET) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  const supabase = adminSupabase();
+  const action = new URL(req.url).searchParams.get('action');
+
+  if (action === 'current') {
+    const { data: season } = await supabase
+      .from('seasons')
+      .select('*')
+      .order('id', { ascending: false })
+      .limit(1)
+      .single();
+
+    return NextResponse.json({ season });
+  }
+
+  return NextResponse.json({ error: 'Unknown action' }, { status: 400 });
+}
