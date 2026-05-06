@@ -1,6 +1,5 @@
 'use client';
-import { formatRating } from '@/lib/glicko2';
-import { leagueDisplayName } from '@/lib/snake-draft';
+import { formatRating, leagueName, leaguePillClass } from '@/lib/utils';
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { Search, Star } from 'lucide-react';
@@ -49,8 +48,10 @@ export default function PlayersPage() {
     <div className="max-w-6xl mx-auto px-4 py-8 page-enter">
       <div className="mb-8">
         <h1 className="font-display text-4xl font-black text-chalk mb-2">Players</h1>
-        <p className="text-ink-400">Season 1 · {players.length} registered</p>
+        <p className="text-ink-400">{players.length} registered</p>
       </div>
+
+      {/* Stats */}
       <div className="grid grid-cols-3 gap-4 mb-8">
         <div className="card p-4 text-center">
           <div className="font-display text-3xl font-black text-gold mb-1">{players.length}</div>
@@ -65,6 +66,8 @@ export default function PlayersPage() {
           <div className="text-xs text-ink-400 uppercase tracking-wider">Top Rated</div>
         </div>
       </div>
+
+      {/* Filters */}
       <div className="flex flex-wrap gap-3 mb-6">
         <div className="relative flex-1 min-w-48">
           <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-ink-400" />
@@ -72,7 +75,7 @@ export default function PlayersPage() {
         </div>
         <select value={leagueFilter} onChange={e => setLeagueFilter(e.target.value)} className="input w-40">
           <option value="all">All Leagues</option>
-          {leagues.map(l => <option key={l} value={l}>{leagueDisplayName(l)}</option>)}
+          {leagues.map(l => <option key={l} value={l}>{leagueName(l)}</option>)}
           <option value="unassigned">Unassigned</option>
         </select>
         <select value={sortBy} onChange={e => setSortBy(e.target.value as any)} className="input w-36">
@@ -81,6 +84,7 @@ export default function PlayersPage() {
           <option value="games">By Games</option>
         </select>
       </div>
+
       {loading ? (
         <div className="card p-12 text-center text-ink-400 animate-pulse">Loading players…</div>
       ) : filtered.length === 0 ? (
@@ -96,34 +100,33 @@ export default function PlayersPage() {
               </tr>
             </thead>
             <tbody>
-              {filtered.map((p, i) => {
-                const isL1 = p.home_league === 'league_1';
-                return (
-                  <tr key={p.id} className="border-b border-ink-800 hover:bg-ink-700/20 transition-colors">
-                    <td className="py-3 px-4 text-ink-500 font-mono text-xs">{i + 1}</td>
-                    <td className="py-3 px-4">
-                      <Link href={`/profile/${p.id}`} className="flex items-center gap-2 group">
-                        <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-sm font-bold flex-shrink-0 ${isL1 ? 'bg-gold/20 text-gold' : 'bg-silver/10 text-silver'}`}>
-                          {p.full_name.charAt(0)}
-                        </div>
-                        <div>
-                          <div className="font-medium text-chalk group-hover:text-gold transition-colors">{p.full_name}</div>
-                          {p.chess_com_username && <div className="text-xs text-ink-500">{p.chess_com_username}</div>}
-                        </div>
-                        {p.joining_season === 1 && <span title="Season 1 Pioneer" className="flex-shrink-0"><Star size={10} className="text-gold/60" /></span>}
-                      </Link>
-                    </td>
-                    <td className="py-3 px-4">
-                      <span className={isL1 ? 'league-pill-l1' : 'league-pill-l2'}>{leagueDisplayName(p.home_league)}</span>
-                    </td>
-                    <td className="py-3 px-4">
-                      <span className={`font-mono font-bold ${p.is_provisional ? 'text-ink-300' : 'text-chalk'}`}>{formatRating(p.ss4_rating, p.rating_deviation)}</span>
-                    </td>
-                    <td className="py-3 px-4 font-mono text-xs text-ink-400">±{Math.round(p.rating_deviation)}</td>
-                    <td className="py-3 px-4 text-ink-400 text-center">{p.games_played}</td>
-                  </tr>
-                );
-              })}
+              {filtered.map((p, i) => (
+                <tr key={p.id} className="border-b border-ink-800 hover:bg-ink-700/20 transition-colors">
+                  <td className="py-3 px-4 text-ink-500 font-mono text-xs">{i + 1}</td>
+                  <td className="py-3 px-4">
+                    <Link href={`/profile/${p.id}`} className="flex items-center gap-2 group">
+                      <div className="w-8 h-8 rounded-lg flex items-center justify-center text-sm font-bold flex-shrink-0 bg-ink-700 text-chalk">
+                        {p.full_name.charAt(0)}
+                      </div>
+                      <div>
+                        <div className="font-medium text-chalk group-hover:text-gold transition-colors">{p.full_name}</div>
+                        {p.chess_com_username && <div className="text-xs text-ink-500">{p.chess_com_username}</div>}
+                      </div>
+                      {p.joining_season === 1 && <span title="Season 1 Pioneer"><Star size={10} className="text-gold/60" /></span>}
+                    </Link>
+                  </td>
+                  <td className="py-3 px-4">
+                    <span className={leaguePillClass(p.home_league)}>{leagueName(p.home_league)}</span>
+                  </td>
+                  <td className="py-3 px-4">
+                    <span className={`font-mono font-bold ${p.is_provisional ? 'text-ink-300' : 'text-chalk'}`}>
+                      {formatRating(p.ss4_rating, p.rating_deviation)}
+                    </span>
+                  </td>
+                  <td className="py-3 px-4 font-mono text-xs text-ink-400">±{Math.round(p.rating_deviation)}</td>
+                  <td className="py-3 px-4 text-ink-400 text-center">{p.games_played}</td>
+                </tr>
+              ))}
             </tbody>
           </table>
           <div className="px-4 py-2 border-t border-ink-800 text-xs text-ink-500">

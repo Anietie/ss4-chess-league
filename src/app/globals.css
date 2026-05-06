@@ -42,4 +42,6 @@ body {
   .league-pill-cl { @apply inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-pitch-800 text-star border border-star/40; }
   .tier-pill-premier { @apply inline-flex px-2 py-0.5 rounded text-xs font-semibold bg-gold/15 text-gold border border-gold/20; }
   .tier-pill-development { @apply inline-flex px-2 py-0.5 rounded text-xs font-semibold bg-ink-700 text-ink-300 border border-ink-600; }
+  .league-pill-scel { 
+  @apply inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-yellow-900/30 text-yellow-300 border border-yellow-600/40; }
 }

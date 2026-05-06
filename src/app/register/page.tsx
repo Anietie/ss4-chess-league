@@ -6,12 +6,21 @@ import { supabase } from '@/lib/supabase';
 
 type Step = 'form' | 'verify' | 'calibrating' | 'done';
 
+interface SeasonStatus {
+  registration_open: boolean;
+  state: 'open' | 'upcoming' | 'closed' | 'always_open';
+  message: string;
+  season_name: string | null;
+  registration_end: string | null;
+}
+
 export default function RegisterPage() {
   const router = useRouter();
   const [step, setStep]     = useState<Step>('form');
   const [loading, setLoading] = useState(false);
   const [error, setError]   = useState('');
   const [result, setResult] = useState<any>(null);
+  const [seasonStatus, setSeasonStatus] = useState<SeasonStatus | null>(null);
   
   // Cooldown timer state
   const [countdown, setCountdown] = useState(0);
@@ -26,6 +35,14 @@ export default function RegisterPage() {
     whatsapp_number:    '',
     year_started_chess: '',
   });
+
+  // Fetch season status on mount
+  useEffect(() => {
+    fetch('/api/season-status')
+      .then(r => r.json())
+      .then(d => setSeasonStatus(d))
+      .catch(() => null);
+  }, []);
 
   // Timer logic that ticks down every second
   useEffect(() => {
@@ -102,6 +119,9 @@ export default function RegisterPage() {
     setCountdown(60); // Start the 60-second cooldown
   };
 
+  // Determine if registration is actually open for new sign-ups
+  const canRegister = seasonStatus?.state === 'open' || seasonStatus?.state === 'always_open';
+
   // ── Check your email (Skipping Calibration) ─────────────────────────────────
   if (step === 'verify') return (
     <div className="min-h-screen flex items-center justify-center px-4">
@@ -175,7 +195,6 @@ export default function RegisterPage() {
             {loading ? 'Sending...' : countdown > 0 ? `Resend in ${countdown}s` : 'Resend Confirmation Email'}
           </button>
           
-          {/* FIXED: This now properly forces them to log in before playing the bot */}
           <button onClick={() => router.push('/auth/login')} className="btn-gold w-full">
             Go to Sign In &rarr;
           </button>
@@ -184,6 +203,51 @@ export default function RegisterPage() {
     </div>
   );
 
+  // ── Registration closed / upcoming — show info page ─────────────────────────
+  if (seasonStatus && !canRegister) {
+    return (
+      <div className="min-h-screen flex items-center justify-center px-4">
+        <div className="card p-8 w-full max-w-md text-center space-y-6">
+          <div className="text-4xl mb-3">♟</div>
+          <h1 className="font-display text-2xl font-bold text-chalk">
+            {seasonStatus.season_name ?? 'SS4 Chess League'}
+          </h1>
+          
+          <div className="space-y-4">
+            {seasonStatus.state === 'upcoming' && (
+              <>
+                <div className="text-4xl">📅</div>
+                <p className="text-ink-300 text-sm">
+                  Registration hasn't opened yet.
+                </p>
+                <div className="card p-4 bg-blue-900/20 border border-blue-700/50 text-sm text-blue-300">
+                  {seasonStatus.message}
+                </div>
+              </>
+            )}
+            
+            {seasonStatus.state === 'closed' && (
+              <>
+                <div className="text-4xl">🔒</div>
+                <p className="text-ink-300 text-sm">
+                  Registration is currently closed.
+                </p>
+                <div className="card p-4 bg-red-900/20 border border-red-700/50 text-sm text-red-300">
+                  {seasonStatus.message}
+                </div>
+              </>
+            )}
+          </div>
+
+          <p className="text-xs text-ink-500 pt-2">
+            Already registered?{' '}
+            <a href="/auth/login" className="text-gold hover:underline">Sign in</a>
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   // ── Registration form ───────────────────────────────────────────────────────
   return (
     <div className="min-h-screen flex items-center justify-center px-4 py-12">
@@ -191,7 +255,28 @@ export default function RegisterPage() {
         <div className="text-center">
           <div className="text-4xl mb-3">♟</div>
           <h1 className="font-display text-2xl font-bold text-chalk">Create Account</h1>
-          <p className="text-ink-400 text-sm mt-1">SS4 Chess League - Season Registration</p>
+          
+          {/* Season status display */}
+          {seasonStatus && (
+            <div className="mt-2">
+              <p className="text-ink-400 text-sm">
+                {seasonStatus.season_name ?? 'SS4 Chess League'}
+              </p>
+              {seasonStatus.state === 'open' && seasonStatus.registration_end && (
+                <p className="text-xs text-amber-400/80 mt-0.5">
+                  ⏳ {seasonStatus.message}
+                </p>
+              )}
+              {seasonStatus.state === 'always_open' && (
+                <p className="text-xs text-green-400/80 mt-0.5">
+                  ✅ Registration is open!
+                </p>
+              )}
+            </div>
+          )}
+          {!seasonStatus && (
+            <p className="text-ink-400 text-sm mt-1">SS4 Chess League</p>
+          )}
         </div>
 
         <div className="space-y-4">

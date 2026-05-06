@@ -1,15 +1,8 @@
 import { createServerClient } from "@/lib/supabase";
-import { formatRating } from "@/lib/utils";
+import { formatRating, leagueName } from "@/lib/utils";
 import Link from "next/link";
 
 const supabase = createServerClient();
-
-function leagueDisplayName(key: string): string {
-  const m = key.match(/^league_(\d+)$/);
-  return m
-    ? `League ${m[1]}`
-    : key.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
-}
 
 async function getHomeData() {
   const [
@@ -21,13 +14,11 @@ async function getHomeData() {
   ] = await Promise.all([
     supabase
       .from("games")
-      .select(
-        `
-        id, result, league, tier, played_at, time_control,
+      .select(`
+        id, result, league, played_at, time_control,
         white_player:players!games_white_player_id_fkey(id, full_name, ss4_rating, rating_deviation),
         black_player:players!games_black_player_id_fkey(id, full_name, ss4_rating, rating_deviation)
-      `,
-      )
+      `)
       .neq("result", "*")
       .neq("league", "calibration")
       .order("played_at", { ascending: false })
@@ -35,13 +26,11 @@ async function getHomeData() {
 
     supabase
       .from("games")
-      .select(
-        `
-        id, round, scheduled_date, league, tier, time_control,
+      .select(`
+        id, round, scheduled_date, league, time_control,
         white_player:players!games_white_player_id_fkey(id, full_name, ss4_rating, rating_deviation),
         black_player:players!games_black_player_id_fkey(id, full_name, ss4_rating, rating_deviation)
-      `,
-      )
+      `)
       .eq("result", "*")
       .neq("league", "calibration")
       .order("scheduled_date")
@@ -49,16 +38,13 @@ async function getHomeData() {
 
     supabase
       .from("players")
-      .select(
-        "id,full_name,ss4_rating,rating_deviation,home_league,current_tier",
-      )
+      .select("id,full_name,ss4_rating,rating_deviation,home_league")
       .eq("is_active", true)
       .neq("home_league", "unassigned")
       .neq("home_league", "calibration")
       .order("ss4_rating", { ascending: false })
       .limit(15),
 
-    // Get all distinct active leagues
     supabase
       .from("players")
       .select("home_league")
@@ -69,7 +55,7 @@ async function getHomeData() {
     supabase
       .from("seasons")
       .select("id,name,status")
-      .in("status", ["active", "playoffs", "registration"])
+      .in("status", ["active", "playoffs", "registration", "draft", "champions_league"])
       .order("id", { ascending: false })
       .limit(1)
       .single(),
@@ -89,27 +75,14 @@ async function getHomeData() {
 
 function ResultBadge({ result }: { result: string }) {
   if (result === "1-0")
-    return (
-      <span className="text-xs font-bold px-2 py-0.5 rounded bg-gold/20 text-gold">
-        1 – 0
-      </span>
-    );
+    return <span className="text-xs font-bold px-2 py-0.5 rounded bg-gold/20 text-gold">1 – 0</span>;
   if (result === "0-1")
-    return (
-      <span className="text-xs font-bold px-2 py-0.5 rounded bg-gold/20 text-gold">
-        0 – 1
-      </span>
-    );
-  return (
-    <span className="text-xs font-bold px-2 py-0.5 rounded bg-ink-600 text-chalk-700">
-      ½ – ½
-    </span>
-  );
+    return <span className="text-xs font-bold px-2 py-0.5 rounded bg-gold/20 text-gold">0 – 1</span>;
+  return <span className="text-xs font-bold px-2 py-0.5 rounded bg-ink-600 text-chalk-700">½ – ½</span>;
 }
 
 export default async function HomePage() {
-  const { recentGames, upcomingGames, topPlayers, leagues, activeSeason } =
-    await getHomeData();
+  const { recentGames, upcomingGames, topPlayers, leagues, activeSeason } = await getHomeData();
 
   return (
     <div className="max-w-7xl mx-auto px-4 py-10 space-y-12">
@@ -120,8 +93,7 @@ export default async function HomePage() {
           SS4 Chess League
         </h1>
         <p className="text-ink-300 text-lg max-w-xl mx-auto">
-          Parallel League Competition · Glicko-2 Rating System · Champions
-          League
+          Parallel League Competition · Glicko-2 Rating System · Champions League · SCEL
         </p>
         {activeSeason && (
           <div className="text-sm text-ink-400">
@@ -167,7 +139,7 @@ export default async function HomePage() {
                     <div className="flex items-center gap-2 flex-shrink-0 ml-2">
                       <ResultBadge result={g.result} />
                       <span className="text-xs text-ink-400 capitalize hidden sm:block">
-                        {leagueDisplayName(g.league)}
+                        {leagueName(g.league)}
                       </span>
                     </div>
                   </Link>
@@ -188,10 +160,7 @@ export default async function HomePage() {
             <div className="card divide-y divide-ink-700">
               {upcomingGames?.length ? (
                 upcomingGames.map((g) => (
-                  <div
-                    key={g.id}
-                    className="flex items-center justify-between px-4 py-3"
-                  >
+                  <div key={g.id} className="flex items-center justify-between px-4 py-3">
                     <div className="flex-1 min-w-0">
                       <span className="text-sm text-chalk">
                         {(g.white_player as any)?.full_name}
@@ -204,9 +173,7 @@ export default async function HomePage() {
                     <div className="flex items-center gap-2 flex-shrink-0 text-xs text-ink-400">
                       <span>{g.scheduled_date}</span>
                       <span className="hidden sm:block">{g.time_control}</span>
-                      <span className="hidden sm:block capitalize">
-                        {leagueDisplayName(g.league)}
-                      </span>
+                      <span className="hidden sm:block">{leagueName(g.league)}</span>
                     </div>
                   </div>
                 ))
@@ -232,16 +199,10 @@ export default async function HomePage() {
                   href={`/profile/${p.id}`}
                   className="flex items-center gap-3 px-4 py-3 hover:bg-ink-700 transition-colors"
                 >
-                  <span className="text-sm text-ink-500 w-5 text-center">
-                    {i + 1}
-                  </span>
+                  <span className="text-sm text-ink-500 w-5 text-center">{i + 1}</span>
                   <div className="flex-1 min-w-0">
-                    <div className="text-sm text-chalk font-medium truncate">
-                      {p.full_name}
-                    </div>
-                    <div className="text-xs text-ink-400 capitalize">
-                      {leagueDisplayName(p.home_league)} · {p.current_tier}
-                    </div>
+                    <div className="text-sm text-chalk font-medium truncate">{p.full_name}</div>
+                    <div className="text-xs text-ink-400">{leagueName(p.home_league)}</div>
                   </div>
                   <span className="text-sm font-mono font-bold text-gold tabular-nums flex-shrink-0">
                     {formatRating(p.ss4_rating, p.rating_deviation)}
@@ -255,7 +216,7 @@ export default async function HomePage() {
             )}
           </div>
 
-          {/* Dynamic league links — only shows leagues that exist */}
+          {/* Quick links */}
           {leagues.length > 0 && (
             <div className="mt-4 flex flex-wrap gap-2">
               {leagues.map((l) => (
@@ -264,9 +225,12 @@ export default async function HomePage() {
                   href={`/league/${l}`}
                   className="btn-ghost flex-1 justify-center text-xs min-w-[80px]"
                 >
-                  {leagueDisplayName(l)}
+                  {leagueName(l)}
                 </Link>
               ))}
+              <Link href="/league/scel" className="btn-ghost flex-1 justify-center text-xs min-w-[80px] text-yellow-400">
+                SCEL
+              </Link>
             </div>
           )}
         </div>

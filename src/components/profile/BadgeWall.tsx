@@ -1,18 +1,19 @@
 interface Badge { badge_type: string; season?: number; description?: string; earned_at?: string; }
 
 const BADGE_META: Record<string, { icon: string; name: string; colour: string }> = {
-  pioneer_s1:     { icon: '🏅', name: 'Pioneer',        colour: 'bg-gold/20 border-gold/40 text-gold' },
-  cl_winner:      { icon: '🏆', name: 'CL Champion',    colour: 'bg-star/20 border-star/40 text-star' },
-  cl_runner_up:   { icon: '🥈', name: 'CL Runner-Up',   colour: 'bg-silver/20 border-silver/40 text-silver' },
-  giant_killer:   { icon: '⚔️',  name: 'Giant Killer',   colour: 'bg-red-900/30 border-red-700/50 text-red-300' },
-  comeback_king:  { icon: '👑', name: 'Comeback King',  colour: 'bg-gold/20 border-gold/40 text-gold' },
-  unbeaten_run:   { icon: '🔥', name: 'Unbeaten Run',   colour: 'bg-orange-900/30 border-orange-700/50 text-orange-300' },
-  top_scorer:     { icon: '🎯', name: 'Top Scorer',     colour: 'bg-green-900/30 border-green-700/50 text-green-300' },
-  clean_sheet:    { icon: '🛡️', name: 'Clean Sheet',    colour: 'bg-navy-800/50 border-ink-600 text-ink-300' },
-  centurion:      { icon: '💯', name: 'Centurion',      colour: 'bg-ink-700 border-ink-600 text-ink-300' },
-  speed_demon:    { icon: '⚡', name: 'Speed Demon',    colour: 'bg-yellow-900/30 border-yellow-700/50 text-yellow-300' },
-  endgame_wizard: { icon: '🧙', name: 'Endgame Wizard', colour: 'bg-purple-900/30 border-purple-700/50 text-purple-300' },
-  first_blood:    { icon: '🗡️',  name: 'First Blood',   colour: 'bg-crimson/30 border-crimson/50 text-red-300' },
+  pioneer_s1:       { icon: '🏅', name: 'Pioneer',          colour: 'bg-gold/20 border-gold/40 text-gold' },
+  league_champion:  { icon: '🏆', name: 'League Champion',   colour: 'bg-gold/20 border-gold/40 text-gold' },
+  cl_winner:        { icon: '👑', name: 'CL Champion',       colour: 'bg-star/20 border-star/40 text-star' },
+  cl_runner_up:     { icon: '🥈', name: 'CL Runner-Up',      colour: 'bg-silver/20 border-silver/40 text-silver' },
+  scel_winner:      { icon: '⚔️', name: 'SCEL Champion',     colour: 'bg-yellow-900/30 border-yellow-600/50 text-yellow-300' },
+  giant_killer:     { icon: '⚡', name: 'Giant Killer',      colour: 'bg-red-900/30 border-red-700/50 text-red-300' },
+  unbeaten_season:  { icon: '🔥', name: 'Unbeaten Season',   colour: 'bg-orange-900/30 border-orange-700/50 text-orange-300' },
+  top_scorer:       { icon: '🎯', name: 'Top Scorer',        colour: 'bg-green-900/30 border-green-700/50 text-green-300' },
+  centurion:        { icon: '💯', name: 'Centurion',         colour: 'bg-ink-700 border-ink-600 text-ink-300' },
+  speed_demon:      { icon: '⚡', name: 'Speed Demon',       colour: 'bg-yellow-900/30 border-yellow-700/50 text-yellow-300' },
+  endgame_wizard:   { icon: '🧙', name: 'Endgame Wizard',    colour: 'bg-purple-900/30 border-purple-700/50 text-purple-300' },
+  first_blood:      { icon: '🗡️', name: 'First Blood',      colour: 'bg-crimson/30 border-crimson/50 text-red-300' },
+  clean_sheet:      { icon: '🛡️', name: 'Clean Sheet',       colour: 'bg-navy-800/50 border-ink-600 text-ink-300' },
 };
 
 export function BadgeWall({ badges }: { badges: Badge[] }) {

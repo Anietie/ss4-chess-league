@@ -26,18 +26,21 @@ type GameRow = {
 const PAGE_SIZE = 20;
 
 const LEAGUE_LABELS: Record<string, string> = {
-  casual:         'Casual',
-  calibration:    'Calibration',
-  league_1:       'League 1',
-  league_2:       'League 2',
-  league_3:       'League 3',
-  league_4:       'League 4',
-  league_5:       'League 5',
-  league_6:       'League 6',
+  casual:           'Casual',
+  calibration:      'Calibration',
+  league_1:         'League 1',
+  league_2:         'League 2',
+  league_3:         'League 3',
+  league_4:         'League 4',
+  league_5:         'League 5',
+  league_6:         'League 6',
+  league_7:         'League 7',
+  league_8:         'League 8',
   champions_league: 'Champions League',
-  open_cup:       'Open Cup',
-  newcomer_shield:'Newcomer Shield',
-  blitz:          'Blitz',
+  scel:             'SCEL',
+  open_cup:         'SCEL',
+  newcomer_shield:  'Newcomer Shield',
+  blitz:            'Blitz',
 };
 
 export default function GameHistoryPage() {

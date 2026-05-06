@@ -16,46 +16,64 @@ const adminDb = () =>
     process.env.SUPABASE_SERVICE_ROLE_KEY!
   );
 
-// ─── POST /api/players — Register ────────────────────────────────────────────
+// ─── POST /api/players — Register (NEW PLAYERS ONLY) ─────────────────────────
 export async function POST(req: NextRequest) {
   const body = await req.json();
   const {
-    full_name,
-    email,
-    password,
-    chess_com_username,
-    lichess_username,
-    whatsapp_number,
-    year_started_chess,
+    full_name, email, password,
+    chess_com_username, lichess_username,
+    whatsapp_number, year_started_chess,
   } = body;
 
   // Validation
   if (!full_name?.trim() || !email?.trim() || !password)
     return NextResponse.json({ error: 'Name, email, and password are required.' }, { status: 400 });
-
   if (password.length < 8)
     return NextResponse.json({ error: 'Password must be at least 8 characters.' }, { status: 400 });
-
   if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
     return NextResponse.json({ error: 'Invalid email address.' }, { status: 400 });
 
   const supabase = adminDb();
 
-  // Duplicate check
-  const { data: existing } = await supabase
-    .from('players').select('id').eq('email', email.toLowerCase().trim()).single();
-  if (existing)
-    return NextResponse.json({ error: 'This email is already registered.' }, { status: 409 });
+  // ── Check if this email is already registered ─────────────────────────────
+  const { data: existingPlayer } = await supabase
+    .from('players')
+    .select('id, full_name, is_active, games_played')
+    .eq('email', email.toLowerCase().trim())
+    .single();
+
+  // Returning player — don't let them register again
+  if (existingPlayer) {
+    return NextResponse.json({
+      error: existingPlayer.is_active
+        ? 'You are already registered. Sign in to continue.'
+        : 'You already have an account. Sign in to reactivate for the new season.',
+      is_returning: true,
+    }, { status: 409 });
+  }
 
   // Open season check
   const { data: season } = await supabase
-    .from('seasons').select('id, name')
+    .from('seasons')
+    .select('id, name, status, registration_start, registration_end')
     .in('status', ['registration', 'draft'])
-    .order('id', { ascending: false }).limit(1).single();
+    .order('id', { ascending: false })
+    .limit(1)
+    .single();
+
   if (!season)
     return NextResponse.json({ error: 'Registration is not currently open.' }, { status: 400 });
 
-  // Seed rating
+  // Check registration window
+  const now = new Date();
+  if (season.registration_start && new Date(season.registration_start) > now) {
+    return NextResponse.json({ error: 'Registration has not opened yet. Check back soon.' }, { status: 400 });
+  }
+  if (season.registration_end && new Date(season.registration_end) < now) {
+    return NextResponse.json({ error: 'Registration for this season has closed.' }, { status: 400 });
+  }
+
+  // ── NEW PLAYER: Seed rating from Chess.com/Lichess or calibration ────────
   let seedRating = 1000, seedSource = 'default';
   if (chess_com_username?.trim()) {
     const r = await fetchChessComRating(chess_com_username.trim());
@@ -67,7 +85,6 @@ export async function POST(req: NextRequest) {
   const needsCalibration = seedSource === 'default';
 
   // Create Supabase Auth user
-  // email_confirm: false → Supabase sends confirmation email via Resend SMTP automatically
   const { data: authData, error: authError } = await supabase.auth.admin.createUser({
     email: email.toLowerCase().trim(),
     password,
@@ -81,7 +98,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: `Account creation failed: ${authError.message}` }, { status: 400 });
   }
 
-  // Insert player record
+  // Insert new player record
   const { data: player, error: playerError } = await supabase
     .from('players')
     .insert({
@@ -101,43 +118,41 @@ export async function POST(req: NextRequest) {
       calibration_complete: !needsCalibration,
       auth_user_id:         authData.user?.id ?? null,
       is_active:            true,
-      is_verified:          false, // flipped to true when they click confirmation email
+      is_verified:          false,
     })
     .select('id').single();
 
   if (playerError) {
-    // Roll back auth user
     await supabase.auth.admin.deleteUser(authData.user!.id);
     return NextResponse.json({ error: playerError.message }, { status: 500 });
   }
 
-  // Pioneer badge for founding season
+  // Pioneer badge for Season 1
   if (season.id === 1) {
     await supabase.from('player_badges').insert({
-      player_id:   player.id,
-      badge_type:  'pioneer_s1',
-      season:      1,
-      description: 'Founding member of the SS4 Chess League',
+      player_id: player.id, badge_type: 'pioneer_s1',
+      season: 1, description: 'Founding member of the SS4 Chess League',
     });
   }
 
   // Welcome notification
   await supabase.from('notifications').insert({
     player_id: player.id,
-    type:      'welcome',
-    title:     'Welcome to SS4 Chess League!',
-    message:   needsCalibration
+    type: 'welcome',
+    title: 'Welcome to SS4 Chess League!',
+    message: needsCalibration
       ? `Check your email to verify your account, then complete 5 bot calibration games before the draft.`
       : `Check your email to verify your account. Your seed rating is ${seedRating} (${seedSource === 'chess_com_api' ? 'Chess.com' : 'Lichess'} rapid).`,
   });
 
   return NextResponse.json({
-    success:           true,
-    player_id:         player.id,
+    success: true,
+    player_id: player.id,
+    is_returning: false,
     needs_calibration: needsCalibration,
-    seed_rating:       needsCalibration ? null : seedRating,
-    seed_source:       seedSource,
-    message:           `Account created! Check ${email} for a confirmation link before signing in.`,
+    seed_rating: needsCalibration ? null : seedRating,
+    seed_source: seedSource,
+    message: `Account created! Check ${email} for a confirmation link before signing in.`,
   });
 }
 

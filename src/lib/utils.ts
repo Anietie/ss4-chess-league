@@ -13,30 +13,62 @@ export function formatRating(rating: number, rd: number): string {
 /** League display name */
 export function leagueName(league: string): string {
   const map: Record<string, string> = {
-    league_1: 'League 1',
-    league_2: 'League 2',
-    league_3: 'League 3',
+    league_1: 'League 1', league_2: 'League 2', league_3: 'League 3', league_4: 'League 4',
+    league_5: 'League 5', league_6: 'League 6', league_7: 'League 7', league_8: 'League 8',
     champions_league: 'Champions League',
+    scel: 'SCEL',
+    open_cup: 'SCEL', // Legacy
     continental_shield: 'Continental Shield',
-    open_cup: 'Open Cup',
     blitz: 'Blitz Invitational',
     newcomer_shield: 'Newcomer Shield',
+    casual: 'Casual',
+    calibration: 'Calibration',
+    unassigned: 'Unassigned',
   };
-  return map[league] ?? league;
+  return map[league] ?? league.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 }
 
-/** League colours for Tailwind classes */
-export function leagueColour(league: string): { primary: string; accent: string } {
-  if (league === 'league_1') return { primary: 'navy', accent: 'gold' };
-  if (league === 'league_2') return { primary: 'red', accent: 'silver' };
-  return { primary: 'gray', accent: 'white' };
+/** League pill CSS class */
+export function leaguePillClass(league: string): string {
+  const n = parseInt(league.replace('league_', ''));
+  if (n === 1) return 'league-pill-l1';
+  if (n === 2) return 'league-pill-l2';
+  if (league === 'champions_league') return 'league-pill-cl';
+  if (league === 'scel') return 'league-pill-scel';
+  return 'inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold bg-ink-700 text-ink-300 border border-ink-600';
 }
 
-/** Result display: '1-0' → 'White wins', etc. */
+/** Competition phase display name */
+export function phaseName(phase: string): string {
+  const map: Record<string, string> = {
+    league_phase: 'League Phase',
+    // SCEL
+    scel_round_128: 'SCEL Round of 128',
+    scel_round_64: 'SCEL Round of 64',
+    scel_round_32: 'SCEL Round of 32',
+    scel_round_16: 'SCEL Round of 16',
+    scel_quarterfinal: 'SCEL Quarter-Final',
+    scel_semifinal: 'SCEL Semi-Final',
+    scel_final: 'SCEL Final',
+    // Champions League
+    cl_group_stage: 'CL Group Stage',
+    cl_round_of_32: 'CL Round of 32',
+    cl_round_of_16: 'CL Round of 16',
+    cl_quarterfinal: 'CL Quarter-Final',
+    cl_semifinal: 'CL Semi-Final',
+    cl_final: 'CL Final',
+    // Other
+    armageddon: 'Armageddon',
+    calibration: 'Calibration',
+    casual: 'Casual',
+  };
+  return map[phase] ?? phase.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
+
+/** Result display */
 export function formatResult(result: string): string {
   const map: Record<string, string> = {
-    '1-0': '1 – 0',
-    '0-1': '0 – 1',
+    '1-0': '1 – 0', '0-1': '0 – 1',
     '0.5-0.5': '½ – ½',
     forfeit_white: 'Forfeit (White)',
     forfeit_both: 'Double Forfeit',
@@ -53,14 +85,16 @@ export function resultPoints(result: string, side: 'white' | 'black'): number {
   return 0;
 }
 
-/** Season label: 1 → 'Season 1 (Apr–Jul 2026)' */
+/** Season label */
 export function seasonLabel(seasonId: number): string {
-  const labels: Record<number, string> = {
-    1: 'Season 1 (Apr–Jul 2026)',
-    2: 'Season 2 (Aug–Nov 2026)',
-    3: 'Season 3 (Jan–Apr 2027)',
-  };
-  return labels[seasonId] ?? `Season ${seasonId}`;
+  return `Season ${seasonId}`;
+}
+
+/** Next power of 2 ≥ n */
+export function nextPowerOfTwo(n: number): number {
+  let p = 1;
+  while (p < n) p *= 2;
+  return p;
 }
 
 /** Clamp a number between min and max */
