@@ -40,9 +40,9 @@ export default function RegisterPage() {
 
   // School & department search state
   const [schoolQuery, setSchoolQuery] = useState('');
-  const [schoolSuggestions, setSchoolSuggestions] = useState<School[]>([]);
+  const [schoolSuggestions, setSchoolSuggestions] = useState<Institution[]>([]);
   const [showSchoolDropdown, setShowSchoolDropdown] = useState(false);
-  const [selectedSchool, setSelectedSchool] = useState<School | null>(null);
+  const [selectedSchool, setSelectedSchool] = useState<Institution | null>(null);
   const [showCustomSchool, setShowCustomSchool] = useState(false);
 
   const [deptQuery, setDeptQuery] = useState('');
