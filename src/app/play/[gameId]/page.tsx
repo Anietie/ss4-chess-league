@@ -12,9 +12,12 @@ import {
   Eye,
   Flag,
   Handshake,
+  Loader2,
   MessageCircle,
   RotateCcw,
   ShieldAlert,
+  Wifi,
+  WifiOff,
 } from "lucide-react";
 import dynamic from "next/dynamic";
 import Link from "next/link";
@@ -62,7 +65,11 @@ function Clock({ name, rating, timeMs, isActive, color }: any) {
   const { text, isLow } = formatTime(display);
   return (
     <div
-      className={`flex items-center justify-between px-4 py-3 rounded-xl border transition-all ${isActive ? "bg-ink-700 border-ink-500" : "bg-ink-900 border-ink-800"}`}
+      className={`flex items-center justify-between px-4 py-3 rounded-xl border transition-all ${
+        isActive
+          ? "bg-ink-700 border-ink-500"
+          : "bg-ink-900 border-ink-800"
+      }`}
     >
       <div>
         <div className="text-xs text-ink-400">
@@ -76,7 +83,13 @@ function Clock({ name, rating, timeMs, isActive, color }: any) {
         <div className="text-xs text-ink-500">±{Math.round(rating)}</div>
       </div>
       <span
-        className={`font-mono text-2xl font-bold tabular-nums ${!isActive ? "text-ink-400" : isLow ? "text-red-400" : "text-chalk"}`}
+        className={`font-mono text-2xl font-bold tabular-nums ${
+          !isActive
+            ? "text-ink-400"
+            : isLow
+              ? "text-red-400"
+              : "text-chalk"
+        }`}
       >
         {text}
       </span>
@@ -105,7 +118,9 @@ function MoveHistory({ moves }: { moves: string[] }) {
         </div>
       ))}
       {!moves.length && (
-        <div className="text-ink-500 italic text-center py-4">No moves yet</div>
+        <div className="text-ink-500 italic text-center py-4">
+          No moves yet
+        </div>
       )}
     </div>
   );
@@ -130,6 +145,33 @@ export default function GameRoomPage() {
   useEffect(() => {
     playRef.current = play;
   }, [play]);
+
+  // ── CONNECTION STATE ────────────────────────────────────────────────────
+  const [connectionStatus, setConnectionStatus] = useState<
+    "connected" | "disconnected" | "reconnecting"
+  >("connected");
+  const [opponentStatus, setOpponentStatus] = useState<
+    "connected" | "disconnected"
+  >("connected");
+  const [reconnectCountdown, setReconnectCountdown] = useState<number | null>(
+    null,
+  );
+  const [disconnectedPlayerId, setDisconnectedPlayerId] = useState<
+    string | null
+  >(null);
+  const [disconnectedPlayerName, setDisconnectedPlayerName] = useState<
+    string | null
+  >(null);
+  const reconnectTimerRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Cleanup reconnect timer
+  useEffect(() => {
+    return () => {
+      if (reconnectTimerRef.current) {
+        clearInterval(reconnectTimerRef.current);
+      }
+    };
+  }, []);
 
   // TAP-TO-MOVE STATE
   const [moveFrom, setMoveFrom] = useState<any>(null);
@@ -166,6 +208,7 @@ export default function GameRoomPage() {
   });
 
   const myPlayerIdRef = useRef<string | null>(null);
+  const userIdRef = useRef<string | null>(null);
 
   // WhatsApp numbers for opponent contact
   const [whiteWhatsapp, setWhiteWhatsapp] = useState<string | null>(null);
@@ -199,7 +242,9 @@ export default function GameRoomPage() {
     const update = () => {
       const remaining = Math.max(
         0,
-        Math.floor((new Date(claimGraceEndsAt).getTime() - Date.now()) / 1000),
+        Math.floor(
+          (new Date(claimGraceEndsAt).getTime() - Date.now()) / 1000,
+        ),
       );
       setClaimCountdown(remaining);
     };
@@ -208,8 +253,40 @@ export default function GameRoomPage() {
     return () => clearInterval(timer);
   }, [claimGraceEndsAt]);
 
+  // Reconnect countdown timer
+  useEffect(() => {
+    if (!reconnectCountdown || reconnectCountdown <= 0) {
+      if (reconnectTimerRef.current) {
+        clearInterval(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+      return;
+    }
+
+    reconnectTimerRef.current = setInterval(() => {
+      setReconnectCountdown((prev) => {
+        if (prev === null || prev <= 1) {
+          if (reconnectTimerRef.current) {
+            clearInterval(reconnectTimerRef.current);
+            reconnectTimerRef.current = null;
+          }
+          return null;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => {
+      if (reconnectTimerRef.current) {
+        clearInterval(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+    };
+  }, [reconnectCountdown]);
+
   useEffect(() => {
     let sock: Socket;
+    let user: any = null;
 
     async function init() {
       try {
@@ -220,7 +297,8 @@ export default function GameRoomPage() {
           setStatus("unauthorized");
           return;
         }
-        const user = session.user;
+        user = session.user;
+        userIdRef.current = user.id;
 
         let resolvedPlayerId: string | null =
           typeof window !== "undefined"
@@ -259,32 +337,69 @@ export default function GameRoomPage() {
         sock = io(socketUrl || "http://localhost:3001", {
           transports: ["websocket", "polling"],
           timeout: 20000,
-          reconnectionAttempts: 5,
-          reconnectionDelay: 2000,
+          reconnectionAttempts: 10,
+          reconnectionDelay: 1000,
+          reconnectionDelayMax: 5000,
         });
         socketRef.current = sock;
 
+        // ── CONNECTION EVENT HANDLERS ─────────────────────────────────────
         sock.on("connect", () => {
           console.log(
             "[socket] connected | game:",
             gameId,
-            "| auth:",
-            user.id,
             "| player:",
             resolvedPlayerId,
           );
-          sock.emit("join_game", {
-            game_id: gameId,
-            auth_user_id: user.id,
-            player_id: resolvedPlayerId,
-            is_spectator: false,
-          });
+
+          if (connectionStatus === "disconnected") {
+            // We lost connection and now we're back — re-join the game
+            console.log("[socket] Reconnecting — re-joining game...");
+            setConnectionStatus("reconnecting");
+
+            sock.emit("join_game", {
+              game_id: gameId,
+              auth_user_id: user?.id,
+              player_id: myPlayerIdRef.current,
+              is_spectator: false,
+            });
+          } else {
+            // First connection
+            sock.emit("join_game", {
+              game_id: gameId,
+              auth_user_id: user?.id,
+              player_id: resolvedPlayerId,
+              is_spectator: false,
+            });
+          }
+        });
+
+        sock.on("disconnect", (reason) => {
+          console.log("[socket] Disconnected:", reason);
+          setConnectionStatus("disconnected");
+        });
+
+        sock.on("reconnect_attempt", (attemptNumber) => {
+          console.log("[socket] Reconnect attempt #", attemptNumber);
+          setConnectionStatus("reconnecting");
+        });
+
+        sock.on("reconnect", () => {
+          console.log("[socket] Successfully reconnected");
+        });
+
+        sock.on("reconnect_failed", () => {
+          console.error("[socket] Reconnection failed after all attempts");
+          setConnectionStatus("disconnected");
         });
 
         sock.on("connect_error", (err) => {
           console.error("[socket] connect_error:", err.message);
           setStatus("waiting");
+          setConnectionStatus("disconnected");
         });
+
+        // ── GAME EVENT HANDLERS ───────────────────────────────────────────
 
         sock.on("game_state", (d) => {
           if (d.pgn) chess.loadPgn(d.pgn);
@@ -294,6 +409,7 @@ export default function GameRoomPage() {
           setSpectators(d.spectator_count || 0);
           setWhiteWhatsapp(d.white_whatsapp || null);
           setBlackWhatsapp(d.black_whatsapp || null);
+          setConnectionStatus("connected");
 
           if (d.your_player_id) {
             myPlayerIdRef.current = d.your_player_id;
@@ -381,9 +497,53 @@ export default function GameRoomPage() {
           setPendingFen(null);
         });
 
+        // ── PLAYER CONNECTION EVENTS ─────────────────────────────────────
+        sock.on("player_disconnected", ({ player_id, reconnect_window }) => {
+          const isOpponent = player_id !== myPlayerIdRef.current;
+
+          if (isOpponent) {
+            // Opponent went offline
+            const opponentName =
+              player_id === white.name
+                ? white.name
+                : player_id === black.name
+                  ? black.name
+                  : "Opponent";
+            setOpponentStatus("disconnected");
+            setDisconnectedPlayerId(player_id);
+            setDisconnectedPlayerName(opponentName);
+            setReconnectCountdown(reconnect_window || 180);
+          } else {
+            // We got disconnected from server perspective (unusual,
+            // handled by our own disconnect event, but keep as fallback)
+            setConnectionStatus("disconnected");
+          }
+        });
+
+        sock.on("player_joined", ({ player_id, is_spectator }) => {
+          // A player reconnected
+          if (
+            !is_spectator &&
+            player_id === disconnectedPlayerId
+          ) {
+            setOpponentStatus("connected");
+            setDisconnectedPlayerId(null);
+            setDisconnectedPlayerName(null);
+            setReconnectCountdown(null);
+          } else if (
+            !is_spectator &&
+            player_id === myPlayerIdRef.current
+          ) {
+            // We successfully re-joined
+            setConnectionStatus("connected");
+          }
+        });
+
         sock.on("game_ended", async (d) => {
           setStatus("ended");
           setResult(d.result);
+          setConnectionStatus("connected");
+          setOpponentStatus("connected");
           if (d.pgn) {
             setFinalPgn(d.pgn);
             try {
@@ -403,15 +563,19 @@ export default function GameRoomPage() {
             else playRef.current("loss");
           }
         });
+
         sock.on("draw_offered", ({ by_player_id }) => {
           if (by_player_id !== myPlayerIdRef.current) setDrawOffered(true);
         });
+
         sock.on("spectator_count", ({ count }) => setSpectators(count));
+
         sock.on("error", ({ message }) => {
           console.error("[socket error]", message);
           setStatus("ended");
           setResult(message || "Server error");
         });
+
         sock.on("game_already_finished", ({ result: r, pgn: finishedPgn }) => {
           setStatus("ended");
           setResult(r);
@@ -425,7 +589,7 @@ export default function GameRoomPage() {
           }
         });
 
-        // ── No-show and nudge events ───────────────────────────────────────
+        // ── No-show and nudge events ─────────────────────────────────────
         sock.on(
           "no_show_claimed",
           ({ claimed_by, grace_ends_at, grace_minutes }) => {
@@ -636,11 +800,56 @@ export default function GameRoomPage() {
 
   return (
     <div className="max-w-6xl mx-auto px-4 py-6">
+      {/* ── CONNECTION STATUS BANNER ──────────────────────────────────── */}
+      {connectionStatus === "reconnecting" && (
+        <div className="fixed top-20 left-1/2 -translate-x-1/2 z-50 bg-amber-900/95 border border-amber-500/60 px-6 py-3 rounded-xl shadow-2xl backdrop-blur-sm">
+          <div className="flex items-center gap-3">
+            <Loader2 className="animate-spin text-amber-400 flex-shrink-0" size={18} />
+            <div>
+              <div className="font-semibold text-amber-300 text-sm">
+                Reconnecting...
+              </div>
+              <div className="text-xs text-amber-400/80">
+                Attempting to restore connection
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {connectionStatus === "disconnected" && status !== "ended" && (
+        <div className="fixed top-20 left-1/2 -translate-x-1/2 z-50 bg-red-900/95 border border-red-500/60 px-6 py-3 rounded-xl shadow-2xl backdrop-blur-sm">
+          <div className="flex items-center gap-3">
+            <WifiOff
+              size={18}
+              className="text-red-400 flex-shrink-0"
+            />
+            <div>
+              <div className="font-semibold text-red-300 text-sm">
+                Connection Lost
+              </div>
+              <div className="text-xs text-red-400/80">
+                Check your internet connection.{status === "active" && " You have 3 minutes to reconnect."}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-3">
-          {status === "active" && <span className="live-dot" />}
+          {status === "active" && connectionStatus === "connected" && (
+            <span className="live-dot" />
+          )}
+          {status === "active" && connectionStatus !== "connected" && (
+            <span className="w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+          )}
           <span className="text-sm font-medium text-chalk capitalize">
-            {status}
+            {connectionStatus === "reconnecting"
+              ? "Reconnecting..."
+              : connectionStatus === "disconnected"
+                ? "Offline"
+                : status}
           </span>
           {result && (
             <span className="text-sm font-bold px-2 py-0.5 rounded bg-gold/20 text-gold">
@@ -653,6 +862,27 @@ export default function GameRoomPage() {
           )}
         </div>
         <div className="flex items-center gap-2">
+          {/* Connection indicator */}
+          <span
+            className={`flex items-center gap-1.5 text-xs px-2 py-0.5 rounded-full border ${
+              connectionStatus === "connected"
+                ? "border-green-700/50 text-green-400 bg-green-400/10"
+                : connectionStatus === "reconnecting"
+                  ? "border-amber-700/50 text-amber-400 bg-amber-400/10"
+                  : "border-red-700/50 text-red-400 bg-red-400/10"
+            }`}
+            title={`Connection: ${connectionStatus}`}
+          >
+            {connectionStatus === "connected" ? (
+              <Wifi size={11} />
+            ) : connectionStatus === "reconnecting" ? (
+              <Loader2 size={11} className="animate-spin" />
+            ) : (
+              <WifiOff size={11} />
+            )}
+            {connectionStatus}
+          </span>
+
           {spectators > 0 && (
             <a
               href={`/game/${gameId}/spectate`}
@@ -678,7 +908,11 @@ export default function GameRoomPage() {
                   setPendingFen(null);
                 }
               }}
-              className={`text-xs px-2 py-1 rounded border transition-colors ${confirmMove ? "border-gold text-gold bg-gold/10" : "border-ink-600 text-ink-400 hover:text-chalk"}`}
+              className={`text-xs px-2 py-1 rounded border transition-colors ${
+                confirmMove
+                  ? "border-gold text-gold bg-gold/10"
+                  : "border-ink-600 text-ink-400 hover:text-chalk"
+              }`}
             >
               ✓ Confirm
             </button>
@@ -691,6 +925,49 @@ export default function GameRoomPage() {
       {roundWindow && (
         <div className="mb-3">
           <CountdownBadge window={roundWindow} />
+        </div>
+      )}
+
+      {/* ── OPPONENT DISCONNECTED WARNING ──────────────────────────────── */}
+      {opponentStatus === "disconnected" && status === "active" && (
+        <div className="mb-4 p-4 rounded-xl bg-red-900/20 border border-red-700/50">
+          <div className="flex items-center gap-3">
+            <WifiOff size={18} className="text-red-400 flex-shrink-0" />
+            <div className="flex-1">
+              <div className="text-sm font-medium text-red-300">
+                {disconnectedPlayerName || "Opponent"} Disconnected
+              </div>
+              <div className="text-xs text-red-400/80 mt-1">
+                {reconnectCountdown !== null && reconnectCountdown > 0 ? (
+                  <>
+                    Automatic forfeit in{" "}
+                    {Math.floor(reconnectCountdown / 60)}:
+                    {(reconnectCountdown % 60)
+                      .toString()
+                      .padStart(2, "0")}
+                  </>
+                ) : (
+                  "Waiting for opponent to reconnect..."
+                )}
+              </div>
+            </div>
+            <NudgeButton
+              onClick={nudgeOpponent}
+              disabled={nudgeCooldown > 0}
+              label={
+                nudgeCooldown > 0
+                  ? `${nudgeCooldown}s`
+                  : "Nudge"
+              }
+            />
+            <button
+              onClick={claimNoShow}
+              className="btn-danger btn-sm gap-1.5"
+            >
+              <AlertTriangle size={13} />
+              Claim Forfeit
+            </button>
+          </div>
         </div>
       )}
 
@@ -739,7 +1016,8 @@ export default function GameRoomPage() {
                   status === "active" &&
                   !isSpectator &&
                   !touchMode &&
-                  !pendingMove
+                  !pendingMove &&
+                  connectionStatus === "connected"
                 }
                 animationDuration={150}
               />
@@ -853,16 +1131,15 @@ export default function GameRoomPage() {
 
             {/* Nudge button */}
             {!isSpectator && status === "active" && (
-              <button
+              <NudgeButton
                 onClick={nudgeOpponent}
                 disabled={nudgeCooldown > 0}
-                className="btn-ghost w-full text-sm gap-2"
-              >
-                <Bell size={14} />
-                {nudgeCooldown > 0
-                  ? `Nudge again in ${nudgeCooldown}s`
-                  : "Nudge Opponent"}
-              </button>
+                label={
+                  nudgeCooldown > 0
+                    ? `Nudge again in ${nudgeCooldown}s`
+                    : "Nudge Opponent"
+                }
+              />
             )}
 
             {/* No-show claim button */}
@@ -903,6 +1180,41 @@ export default function GameRoomPage() {
                 <span className="text-chalk capitalize">{status}</span>
               </div>
               <div className="flex justify-between">
+                <span className="text-ink-400">Connection</span>
+                <span
+                  className={`flex items-center gap-1.5 ${
+                    connectionStatus === "connected"
+                      ? "text-green-400"
+                      : connectionStatus === "reconnecting"
+                        ? "text-amber-400"
+                        : "text-red-400"
+                  }`}
+                >
+                  {connectionStatus === "connected" ? (
+                    <Wifi size={11} />
+                  ) : connectionStatus === "reconnecting" ? (
+                    <Loader2 size={11} className="animate-spin" />
+                  ) : (
+                    <WifiOff size={11} />
+                  )}
+                  {connectionStatus === "reconnecting"
+                    ? "Reconnecting"
+                    : connectionStatus}
+                </span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-ink-400">Opponent</span>
+                <span
+                  className={`capitalize ${
+                    opponentStatus === "connected"
+                      ? "text-green-400"
+                      : "text-red-400"
+                  }`}
+                >
+                  {opponentStatus}
+                </span>
+              </div>
+              <div className="flex justify-between">
                 <span className="text-ink-400">Spectators</span>
                 <span className="text-chalk">{spectators}</span>
               </div>
@@ -919,5 +1231,29 @@ export default function GameRoomPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+/**
+ * Reusable Nudge button component with Bell icon and optional countdown.
+ */
+function NudgeButton({
+  onClick,
+  disabled,
+  label,
+}: {
+  onClick: () => void;
+  disabled: boolean;
+  label: string;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      className="btn-ghost btn-sm gap-2 disabled:opacity-50"
+    >
+      <Bell size={14} />
+      {label}
+    </button>
   );
 }

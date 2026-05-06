@@ -180,726 +180,6 @@ vercel.json
 <files>
 This section contains the contents of the repository's files.
 
-<file path="src/app/api/admin/round-windows/route.ts">
-// src/app/api/admin/round-windows/route.ts
-import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
-
-const adminSupabase = () =>
-  createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!
-  );
-
-export async function GET(req: NextRequest) {
-  if (req.headers.get('x-admin-secret') !== process.env.ADMIN_SECRET) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
-
-  const supabase = adminSupabase();
-  const season = new URL(req.url).searchParams.get('season') || '1';
-
-  const { data, error } = await supabase
-    .from('round_windows')
-    .select('*')
-    .eq('season', Number(season))
-    .order('round');
-
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json({ windows: data });
-}
-
-export async function POST(req: NextRequest) {
-  if (req.headers.get('x-admin-secret') !== process.env.ADMIN_SECRET) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
-
-  const { season, round, date, start_time, end_time, competition } = await req.json();
-  
-  if (!season || !round || !date || !start_time || !end_time) {
-    return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
-  }
-
-  const supabase = adminSupabase();
-
-  // Build timestamps in WAT (UTC+1)
-  const windowStart = new Date(`${date}T${start_time}:00+01:00`);
-  const windowEnd = new Date(`${date}T${end_time}:00+01:00`);
-
-  if (windowEnd <= windowStart) {
-    return NextResponse.json({ error: 'End time must be after start time' }, { status: 400 });
-  }
-
-  // Get all active leagues for this season
-  const { data: leagues } = await supabase
-    .from('players')
-    .select('home_league')
-    .eq('is_active', true)
-    .neq('home_league', 'unassigned')
-    .neq('home_league', 'calibration');
-
-  const uniqueLeagues = [...new Set((leagues ?? []).map(l => l.home_league).filter(l => /^league_\d+$/.test(l)))];
-
-  const windows = uniqueLeagues.map(league => ({
-    season,
-    competition: competition || 'league',
-    round,
-    league,
-    window_start: windowStart.toISOString(),
-    window_end: windowEnd.toISOString(),
-    status: 'scheduled',
-  }));
-
-  if (windows.length === 0) {
-    return NextResponse.json({ error: 'No active leagues found' }, { status: 400 });
-  }
-
-  const { error } = await supabase
-    .from('round_windows')
-    .upsert(windows, { onConflict: 'season,competition,round,league' });
-
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-
-  return NextResponse.json({ success: true, leagues_updated: windows.length });
-}
-</file>
-
-<file path="src/app/api/games/[id]/claim-no-show/route.ts">
-// src/app/api/games/[id]/claim-no-show/route.ts
-import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
-
-const adminSupabase = () =>
-  createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!
-  );
-
-export async function POST(
-  req: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
-) {
-  const { id: gameId } = await params;
-  const { player_id } = await req.json();
-
-  if (!player_id) {
-    return NextResponse.json({ error: 'player_id required' }, { status: 400 });
-  }
-
-  const supabase = adminSupabase();
-
-  // Fetch game
-  const { data: game, error: gameError } = await supabase
-    .from('games')
-    .select('id, white_player_id, black_player_id, round, league, season, result')
-    .eq('id', gameId)
-    .single();
-
-  if (gameError || !game) {
-    return NextResponse.json({ error: 'Game not found' }, { status: 404 });
-  }
-
-  if (game.result !== '*') {
-    return NextResponse.json({ error: 'Game already has a result' }, { status: 400 });
-  }
-
-  // Verify player is in this game
-  if (player_id !== game.white_player_id && player_id !== game.black_player_id) {
-    return NextResponse.json({ error: 'Not your game' }, { status: 403 });
-  }
-
-  const opponentId = player_id === game.white_player_id ? game.black_player_id : game.white_player_id;
-
-  // Check for existing claim
-  const { data: existingClaim } = await supabase
-    .from('no_show_claims')
-    .select('id')
-    .eq('game_id', gameId)
-    .is('resolved_at', null)
-    .single();
-
-  if (existingClaim) {
-    return NextResponse.json({ error: 'A no-show claim is already pending' }, { status: 409 });
-  }
-
-  // Find the round window
-  const { data: roundWindow } = await supabase
-    .from('round_windows')
-    .select('window_start, window_end')
-    .eq('season', game.season)
-    .eq('round', game.round)
-    .eq('league', game.league)
-    .single();
-
-  if (!roundWindow) {
-    return NextResponse.json({ error: 'No round window found for this game' }, { status: 404 });
-  }
-
-  const now = new Date();
-  const windowEnd = new Date(roundWindow.window_end);
-
-  // Calculate grace period
-  const maxGraceMs = 15 * 60 * 1000; // 15 minutes
-  const remainingWindowMs = windowEnd.getTime() - now.getTime();
-  const gracePeriodMs = Math.min(maxGraceMs, Math.max(60 * 1000, remainingWindowMs));
-  const graceEndsAt = new Date(now.getTime() + gracePeriodMs);
-  const graceMinutes = Math.ceil(gracePeriodMs / (60 * 1000));
-
-  // Create claim
-  const { data: claim, error: claimError } = await supabase
-    .from('no_show_claims')
-    .insert({
-      game_id: gameId,
-      claimed_by: player_id,
-      claimed_against: opponentId,
-      claimed_at: now.toISOString(),
-      grace_ends_at: graceEndsAt.toISOString(),
-    })
-    .select('id')
-    .single();
-
-  if (claimError) {
-    return NextResponse.json({ error: claimError.message }, { status: 500 });
-  }
-
-  // Notify opponent
-  await supabase.from('notifications').insert({
-    player_id: opponentId,
-    type: 'no_show_claimed',
-    title: '⚠️ No-Show Claimed Against You',
-    message: `Your opponent has claimed you as a no-show. You have ${graceMinutes} minutes to join the game before automatic forfeit.`,
-    game_id: gameId,
-  });
-
-  // Send push notification
-  try {
-    const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
-    await fetch(`${appUrl}/api/push/send`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-internal-secret': process.env.INTERNAL_API_SECRET || '',
-      },
-      body: JSON.stringify({
-        player_ids: [opponentId],
-        title: '⚠️ No-Show Claimed',
-        body: `Your opponent claimed you as a no-show. Join within ${graceMinutes} minutes.`,
-        url: `/play/${gameId}`,
-        tag: `no-show-${gameId}`,
-      }),
-    });
-  } catch {}
-
-  return NextResponse.json({
-    success: true,
-    claim_id: claim.id,
-    grace_ends_at: graceEndsAt.toISOString(),
-    grace_minutes: graceMinutes,
-  });
-}
-
-export async function DELETE(
-  req: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
-) {
-  const { id: gameId } = await params;
-  const supabase = adminSupabase();
-
-  const { data: claim } = await supabase
-    .from('no_show_claims')
-    .select('id, claimed_against')
-    .eq('game_id', gameId)
-    .is('resolved_at', null)
-    .single();
-
-  if (claim) {
-    await supabase
-      .from('no_show_claims')
-      .update({ resolved_at: new Date().toISOString(), resolution: 'opponent_joined' })
-      .eq('id', claim.id);
-
-    // Notify the claimed-against player that the claim is resolved
-    await supabase.from('notifications').insert({
-      player_id: claim.claimed_against,
-      type: 'no_show_resolved',
-      title: '✅ No-Show Claim Resolved',
-      message: 'The no-show claim against you has been cancelled because you joined the game.',
-      game_id: gameId,
-    });
-  }
-
-  return NextResponse.json({ success: true });
-}
-</file>
-
-<file path="src/app/api/notifications/send/route.ts">
-import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
-
-const adminSupabase = () =>
-  createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!
-  );
-
-export async function POST(req: NextRequest) {
-  if (req.headers.get('x-internal-secret') !== process.env.INTERNAL_API_SECRET) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
-
-  const { player_id, type, title, message, game_id } = await req.json();
-
-  if (!player_id || !title || !message) {
-    return NextResponse.json({ error: 'player_id, title, and message required' }, { status: 400 });
-  }
-
-  const supabase = adminSupabase();
-
-  const { error } = await supabase.from('notifications').insert({
-    player_id,
-    type: type || 'admin_action',
-    title,
-    message,
-    game_id: game_id || null,
-  });
-
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
-  }
-
-  return NextResponse.json({ success: true });
-}
-</file>
-
-<file path="src/app/api/push/send/route.ts">
-
-</file>
-
-<file path="src/app/api/push/subscribe/route.ts">
-// src/app/api/push/subscribe/route.ts
-import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
-
-const adminSupabase = () =>
-  createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!
-  );
-
-export async function POST(req: NextRequest) {
-  const { player_id, endpoint, p256dh, auth } = await req.json();
-
-  if (!player_id || !endpoint || !p256dh || !auth) {
-    return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
-  }
-
-  const supabase = adminSupabase();
-
-  const { error } = await supabase
-    .from('push_subscriptions')
-    .upsert(
-      { player_id, endpoint, p256dh, auth },
-      { onConflict: 'player_id,endpoint' }
-    );
-
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
-  }
-
-  return NextResponse.json({ success: true });
-}
-</file>
-
-<file path="src/app/api/push/unsubscribe/route.ts">
-
-</file>
-
-<file path="src/components/ui/CountdownBadge.tsx">
-// src/components/ui/CountdownBadge.tsx
-'use client';
-import { useCountdown } from '@/hooks/useCountdown';
-import { Clock, Play, AlertTriangle, XCircle } from 'lucide-react';
-
-interface Props {
-  window: { window_start: string; window_end: string; status: string } | null | undefined;
-  roundNumber?: number;
-  className?: string;
-  compact?: boolean;
-}
-
-export function CountdownBadge({ window, roundNumber, className = '', compact = false }: Props) {
-  const countdown = useCountdown(window);
-
-  if (countdown.status === 'none') return null;
-
-  const config = {
-    upcoming: {
-      icon: <Clock size={compact ? 11 : 14} />,
-      bg: 'bg-blue-900/30 border-blue-700/50',
-      text: 'text-blue-300',
-    },
-    open: {
-      icon: <Play size={compact ? 11 : 14} className="animate-pulse" />,
-      bg: 'bg-green-900/30 border-green-700/50',
-      text: 'text-green-300',
-    },
-    closing_soon: {
-      icon: <AlertTriangle size={compact ? 11 : 14} />,
-      bg: 'bg-amber-900/30 border-amber-700/50',
-      text: 'text-amber-300',
-    },
-    closed: {
-      icon: <XCircle size={compact ? 11 : 14} />,
-      bg: 'bg-red-900/30 border-red-700/50',
-      text: 'text-red-300',
-    },
-  }[countdown.status];
-
-  return (
-    <div className={`flex items-center gap-2 px-3 py-2 rounded-lg border ${config.bg} ${config.text} text-xs font-medium ${className}`}>
-      {config.icon}
-      <span>
-        {roundNumber ? `R${roundNumber}: ` : ''}
-        {countdown.label}
-      </span>
-    </div>
-  );
-}
-</file>
-
-<file path="src/hooks/useCountdown.ts">
-// src/hooks/useCountdown.ts
-'use client';
-import { useEffect, useState, useCallback } from 'react';
-
-export interface CountdownState {
-  status: 'upcoming' | 'open' | 'closing_soon' | 'closed' | 'none';
-  label: string;
-  timeLeft: string;
-  isOpen: boolean;
-  isClosed: boolean;
-  windowStart: Date | null;
-  windowEnd: Date | null;
-  secondsToStart: number;
-  secondsToEnd: number;
-}
-
-interface RoundWindow {
-  window_start: string;
-  window_end: string;
-  status: string;
-}
-
-export function useCountdown(window: RoundWindow | null | undefined): CountdownState {
-  const [now, setNow] = useState(() => new Date());
-
-  useEffect(() => {
-    const interval = setInterval(() => setNow(new Date()), 1000);
-    return () => clearInterval(interval);
-  }, []);
-
-  if (!window || !window.window_start || !window.window_end) {
-    return {
-      status: 'none',
-      label: 'No window scheduled',
-      timeLeft: '--:--:--',
-      isOpen: false,
-      isClosed: false,
-      windowStart: null,
-      windowEnd: null,
-      secondsToStart: 0,
-      secondsToEnd: 0,
-    };
-  }
-
-  const start = new Date(window.window_start);
-  const end = new Date(window.window_end);
-  const diffToStart = start.getTime() - now.getTime();
-  const diffToEnd = end.getTime() - now.getTime();
-
-  // Already closed by status
-  if (window.status === 'closed') {
-    return {
-      status: 'closed',
-      label: 'Window closed',
-      timeLeft: '00:00:00',
-      isOpen: false,
-      isClosed: true,
-      windowStart: start,
-      windowEnd: end,
-      secondsToStart: 0,
-      secondsToEnd: 0,
-    };
-  }
-
-  if (diffToStart > 0) {
-    // Window hasn't started yet
-    const days = Math.floor(diffToStart / (1000 * 60 * 60 * 24));
-    const hours = Math.floor((diffToStart % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
-    const minutes = Math.floor((diffToStart % (1000 * 60 * 60)) / (1000 * 60));
-    const seconds = Math.floor((diffToStart % (1000 * 60)) / 1000);
-
-    let label: string;
-    if (days > 0) {
-      label = `Starts in ${days}d ${hours}h`;
-    } else if (hours > 0) {
-      label = `Starts in ${hours}h ${minutes}m`;
-    } else if (minutes > 0) {
-      label = `Starts in ${minutes}m ${seconds}s`;
-    } else {
-      label = `Starts in ${seconds}s`;
-    }
-
-    return {
-      status: 'upcoming',
-      label,
-      timeLeft: `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`,
-      isOpen: false,
-      isClosed: false,
-      windowStart: start,
-      windowEnd: end,
-      secondsToStart: Math.floor(diffToStart / 1000),
-      secondsToEnd: Math.floor(diffToEnd / 1000),
-    };
-  }
-
-  if (diffToEnd > 0) {
-    // Window is open
-    const minutesLeft = Math.floor(diffToEnd / (1000 * 60));
-    const seconds = Math.floor((diffToEnd % (1000 * 60)) / 1000);
-    const closingSoon = diffToEnd < 15 * 60 * 1000; // 15 minutes
-
-    let label: string;
-    if (closingSoon) {
-      label = `Closes in ${minutesLeft}:${String(seconds).padStart(2, '0')}`;
-    } else {
-      label = 'Window open — join now!';
-    }
-
-    return {
-      status: closingSoon ? 'closing_soon' : 'open',
-      label,
-      timeLeft: `${String(Math.floor(minutesLeft / 60)).padStart(2, '0')}:${String(minutesLeft % 60).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`,
-      isOpen: true,
-      isClosed: false,
-      windowStart: start,
-      windowEnd: end,
-      secondsToStart: 0,
-      secondsToEnd: Math.floor(diffToEnd / 1000),
-    };
-  }
-
-  // Window ended
-  return {
-    status: 'closed',
-    label: 'Window closed',
-    timeLeft: '00:00:00',
-    isOpen: false,
-    isClosed: true,
-    windowStart: start,
-    windowEnd: end,
-    secondsToStart: 0,
-    secondsToEnd: 0,
-  };
-}
-</file>
-
-<file path="src/lib/push-notifications.ts">
-const VAPID_PUBLIC_KEY = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY || "";
-
-export async function subscribeToPush(
-  playerId: string,
-): Promise<PushSubscription | null> {
-  if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
-    console.warn("[push] Push notifications not supported");
-    return null;
-  }
-
-  try {
-    const registration = await navigator.serviceWorker.ready;
-
-    const existingSubscription =
-      await registration.pushManager.getSubscription();
-    if (existingSubscription) {
-      await saveSubscription(playerId, existingSubscription);
-      return existingSubscription;
-    }
-
-    if (!VAPID_PUBLIC_KEY) {
-      console.error("[push] VAPID_PUBLIC_KEY not configured");
-      return null;
-    }
-
-    const subscription = await registration.pushManager.subscribe({
-      userVisibleOnly: true,
-      applicationServerKey: urlBase64ToUint8Array(
-        VAPID_PUBLIC_KEY,
-      ) as BufferSource,
-    });
-
-    await saveSubscription(playerId, subscription);
-    return subscription;
-  } catch (error) {
-    console.error("[push] Subscription failed:", error);
-    return null;
-  }
-}
-
-export async function unsubscribeFromPush(playerId: string): Promise<void> {
-  try {
-    const registration = await navigator.serviceWorker.ready;
-    const subscription = await registration.pushManager.getSubscription();
-    if (subscription) {
-      await subscription.unsubscribe();
-      await fetch("/api/push/unsubscribe", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          player_id: playerId,
-          endpoint: subscription.endpoint,
-        }),
-      });
-    }
-  } catch (error) {
-    console.error("[push] Unsubscribe failed:", error);
-  }
-}
-
-export async function checkNotificationPermission(): Promise<NotificationPermission> {
-  if (!("Notification" in window)) return "denied";
-
-  let permission = Notification.permission;
-
-  if (permission === "default") {
-    permission = await Notification.requestPermission();
-  }
-
-  return permission;
-}
-
-async function saveSubscription(
-  playerId: string,
-  subscription: PushSubscription,
-): Promise<void> {
-  const key = subscription.getKey("p256dh");
-  const auth = subscription.getKey("auth");
-
-  if (!key || !auth) return;
-
-  try {
-    await fetch("/api/push/subscribe", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        player_id: playerId,
-        endpoint: subscription.endpoint,
-        p256dh: btoa(String.fromCharCode(...new Uint8Array(key))),
-        auth: btoa(String.fromCharCode(...new Uint8Array(auth))),
-      }),
-    });
-  } catch (error) {
-    console.error("[push] Failed to save subscription:", error);
-  }
-}
-
-function urlBase64ToUint8Array(base64String: string): Uint8Array {
-  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
-  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
-  const rawData = atob(base64);
-  const outputArray = new Uint8Array(rawData.length);
-  for (let i = 0; i < rawData.length; ++i) {
-    outputArray[i] = rawData.charCodeAt(i);
-  }
-  return outputArray;
-}
-</file>
-
-<file path="supabase/migration_v5_play_windows.sql">
--- migration_v5_play_windows.sql
--- Run in Supabase SQL Editor
-
--- ── Round Windows ───────────────────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS round_windows (
-  id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  season          INTEGER NOT NULL REFERENCES seasons(id),
-  competition     TEXT NOT NULL CHECK (competition IN ('league', 'scel', 'champions_league', 'continental_shield', 'blitz', 'newcomer_shield')),
-  round           INTEGER NOT NULL,
-  league          TEXT, -- NULL for non-league competitions
-  window_start    TIMESTAMPTZ NOT NULL,
-  window_end      TIMESTAMPTZ NOT NULL,
-  status          TEXT NOT NULL DEFAULT 'scheduled' CHECK (status IN ('scheduled', 'open', 'closed')),
-  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  UNIQUE(season, competition, round, league)
-);
-
-CREATE INDEX IF NOT EXISTS idx_round_windows_status ON round_windows(status, window_start);
-
--- ── No-Show Claims ──────────────────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS no_show_claims (
-  id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  game_id         UUID NOT NULL REFERENCES games(id) ON DELETE CASCADE,
-  claimed_by      UUID NOT NULL REFERENCES players(id),
-  claimed_against UUID NOT NULL REFERENCES players(id),
-  claimed_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-  grace_ends_at   TIMESTAMPTZ NOT NULL,
-  resolved_at     TIMESTAMPTZ,
-  resolution      TEXT CHECK (resolution IN ('auto_forfeit', 'opponent_joined', 'cancelled', 'manual')),
-  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_no_show_claims_game ON no_show_claims(game_id);
-CREATE INDEX IF NOT EXISTS idx_no_show_claims_pending ON no_show_claims(resolved_at) WHERE resolved_at IS NULL;
-
--- ── WhatsApp Notifications Log ─────────────────────────────────────────────
-CREATE TABLE IF NOT EXISTS whatsapp_logs (
-  id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  player_id       UUID REFERENCES players(id),
-  phone_number    TEXT NOT NULL,
-  template_name   TEXT NOT NULL,
-  message_body    TEXT NOT NULL,
-  status          TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'sent', 'failed', 'delivered', 'read')),
-  meta_message_id TEXT,
-  error_message   TEXT,
-  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_whatsapp_logs_player ON whatsapp_logs(player_id);
-CREATE INDEX IF NOT EXISTS idx_whatsapp_logs_status ON whatsapp_logs(status);
-
--- ── Extend notifications table for nudge ──────────────────────────────────
-ALTER TABLE notifications DROP CONSTRAINT IF EXISTS notifications_type_check;
-ALTER TABLE notifications ADD CONSTRAINT notifications_type_check
-  CHECK (type IN (
-    'fixture_scheduled','round_start','deadline_reminder',
-    'result_recorded','cl_qualified','cup_qualified',
-    'badge_awarded','suspension','rating_update',
-    'casual_challenge','casual_accepted','casual_declined',
-    'draft_result','admin_action','nudge',
-    'no_show_claimed','no_show_resolved','round_starting_soon',
-    'window_open','window_closed','season_starting'
-  ));
-
--- ── Ensure whatsapp_number is NOT NULL for active players ─────────────────
--- (We'll enforce this in the registration API, but add a partial index for queries)
-CREATE INDEX IF NOT EXISTS idx_players_whatsapp ON players(whatsapp_number) 
-  WHERE is_active = TRUE AND whatsapp_number IS NOT NULL;
-
--- ── Real-time enable the new tables ───────────────────────────────────────
-ALTER PUBLICATION supabase_realtime ADD TABLE round_windows;
-ALTER PUBLICATION supabase_realtime ADD TABLE no_show_claims;
-
--- Add to migration_v5_play_windows.sql or run separately
-CREATE TABLE IF NOT EXISTS push_subscriptions (
-  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-  player_id UUID REFERENCES players(id) ON DELETE CASCADE,
-  endpoint TEXT NOT NULL,
-  p256dh TEXT NOT NULL,
-  auth TEXT NOT NULL,
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-  UNIQUE(player_id, endpoint)
-);
-</file>
-
 <file path=".gitignore">
 .vercel
 .env.local
@@ -971,105 +251,6 @@ module.exports = {
     { "name": "League 2",  "url": "/league/league_2" }
   ]
 }
-</file>
-
-<file path="public/sw.js">
-const CACHE_NAME = 'ss4-chess-v1';
-const STATIC_ASSETS = [
-  '/',
-  '/manifest.json',
-  '/stockfish/stockfish-nnue-16.js',
-  '/stockfish/stockfish-nnue-16.wasm',
-];
-
-// Install: cache static assets
-self.addEventListener('install', (event) => {
-  event.waitUntil(
-    caches.open(CACHE_NAME).then(cache => cache.addAll(STATIC_ASSETS)).then(() => self.skipWaiting())
-  );
-});
-
-// Activate: clear old caches
-self.addEventListener('activate', (event) => {
-  event.waitUntil(
-    caches.keys().then(keys =>
-      Promise.all(keys.filter(k => k !== CACHE_NAME).map(k => caches.delete(k)))
-    ).then(() => self.clients.claim())
-  );
-});
-
-// Fetch: cache-first for game review pages and static, network-first for API
-self.addEventListener('fetch', (event) => {
-  const { request } = event;
-  const url = new URL(request.url);
-
-  // Never cache API routes or socket connections
-  if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/socket.io/')) {
-    return;
-  }
-
-  // Cache-first for game review (so analysis works offline)
-  if (url.pathname.startsWith('/game/') && url.pathname.endsWith('/review')) {
-    event.respondWith(
-      caches.match(request).then(cached => {
-        const networkFetch = fetch(request).then(res => {
-          if (res.ok) {
-            const clone = res.clone();
-            caches.open(CACHE_NAME).then(cache => cache.put(request, clone));
-          }
-          return res;
-        });
-        return cached ?? networkFetch;
-      })
-    );
-    return;
-  }
-
-  // Network-first for everything else, fall back to cache
-  event.respondWith(
-    fetch(request).catch(() => caches.match(request))
-  );
-});
-
-// Push notifications
-self.addEventListener('push', (event) => {
-  if (!event.data) return;
-
-  let payload;
-  try {
-    payload = event.data.json();
-  } catch {
-    const text = event.data.text();
-    payload = { title: 'SS4 Chess', body: text, data: { url: '/dashboard' } };
-  }
-
-  const { title, body, data, tag } = payload;
-
-  event.waitUntil(
-    self.registration.showNotification(title || 'SS4 Chess League', {
-      body: body || '',
-      icon: '/icons/icon-192.png',
-      badge: '/icons/icon-192.png',
-      data: { url: data?.url || '/dashboard' },
-      tag: tag || 'ss4-notification',
-      requireInteraction: true,
-      vibrate: [200, 100, 200],
-    })
-  );
-});
-
-// Notification click → open relevant page
-self.addEventListener('notificationclick', (event) => {
-  event.notification.close();
-  const targetUrl = event.notification.data?.url ?? '/dashboard';
-  event.waitUntil(
-    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(clients => {
-      const existing = clients.find(c => c.url.includes(self.location.origin));
-      if (existing) { existing.focus(); existing.navigate(targetUrl); }
-      else self.clients.openWindow(targetUrl);
-    })
-  );
-});
 </file>
 
 <file path="railway.json">
@@ -2362,6 +1543,90 @@ export async function POST(req: NextRequest) {
 }
 </file>
 
+<file path="src/app/api/admin/round-windows/route.ts">
+// src/app/api/admin/round-windows/route.ts
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+
+const adminSupabase = () =>
+  createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!
+  );
+
+export async function GET(req: NextRequest) {
+  if (req.headers.get('x-admin-secret') !== process.env.ADMIN_SECRET) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  const supabase = adminSupabase();
+  const season = new URL(req.url).searchParams.get('season') || '1';
+
+  const { data, error } = await supabase
+    .from('round_windows')
+    .select('*')
+    .eq('season', Number(season))
+    .order('round');
+
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  return NextResponse.json({ windows: data });
+}
+
+export async function POST(req: NextRequest) {
+  if (req.headers.get('x-admin-secret') !== process.env.ADMIN_SECRET) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  const { season, round, date, start_time, end_time, competition } = await req.json();
+  
+  if (!season || !round || !date || !start_time || !end_time) {
+    return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
+  }
+
+  const supabase = adminSupabase();
+
+  // Build timestamps in WAT (UTC+1)
+  const windowStart = new Date(`${date}T${start_time}:00+01:00`);
+  const windowEnd = new Date(`${date}T${end_time}:00+01:00`);
+
+  if (windowEnd <= windowStart) {
+    return NextResponse.json({ error: 'End time must be after start time' }, { status: 400 });
+  }
+
+  // Get all active leagues for this season
+  const { data: leagues } = await supabase
+    .from('players')
+    .select('home_league')
+    .eq('is_active', true)
+    .neq('home_league', 'unassigned')
+    .neq('home_league', 'calibration');
+
+  const uniqueLeagues = [...new Set((leagues ?? []).map(l => l.home_league).filter(l => /^league_\d+$/.test(l)))];
+
+  const windows = uniqueLeagues.map(league => ({
+    season,
+    competition: competition || 'league',
+    round,
+    league,
+    window_start: windowStart.toISOString(),
+    window_end: windowEnd.toISOString(),
+    status: 'scheduled',
+  }));
+
+  if (windows.length === 0) {
+    return NextResponse.json({ error: 'No active leagues found' }, { status: 400 });
+  }
+
+  const { error } = await supabase
+    .from('round_windows')
+    .upsert(windows, { onConflict: 'season,competition,round,league' });
+
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+
+  return NextResponse.json({ success: true, leagues_updated: windows.length });
+}
+</file>
+
 <file path="src/app/api/admin/season-end/route.ts">
 import { CUP_QUALIFIERS_PER_LEAGUE } from "@/lib/snake-draft";
 import { createClient } from "@supabase/supabase-js";
@@ -3224,6 +2489,174 @@ export async function GET(req: NextRequest) {
 }
 </file>
 
+<file path="src/app/api/games/[id]/claim-no-show/route.ts">
+// src/app/api/games/[id]/claim-no-show/route.ts
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+
+const adminSupabase = () =>
+  createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!
+  );
+
+export async function POST(
+  req: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const { id: gameId } = await params;
+  const { player_id } = await req.json();
+
+  if (!player_id) {
+    return NextResponse.json({ error: 'player_id required' }, { status: 400 });
+  }
+
+  const supabase = adminSupabase();
+
+  // Fetch game
+  const { data: game, error: gameError } = await supabase
+    .from('games')
+    .select('id, white_player_id, black_player_id, round, league, season, result')
+    .eq('id', gameId)
+    .single();
+
+  if (gameError || !game) {
+    return NextResponse.json({ error: 'Game not found' }, { status: 404 });
+  }
+
+  if (game.result !== '*') {
+    return NextResponse.json({ error: 'Game already has a result' }, { status: 400 });
+  }
+
+  // Verify player is in this game
+  if (player_id !== game.white_player_id && player_id !== game.black_player_id) {
+    return NextResponse.json({ error: 'Not your game' }, { status: 403 });
+  }
+
+  const opponentId = player_id === game.white_player_id ? game.black_player_id : game.white_player_id;
+
+  // Check for existing claim
+  const { data: existingClaim } = await supabase
+    .from('no_show_claims')
+    .select('id')
+    .eq('game_id', gameId)
+    .is('resolved_at', null)
+    .single();
+
+  if (existingClaim) {
+    return NextResponse.json({ error: 'A no-show claim is already pending' }, { status: 409 });
+  }
+
+  // Find the round window
+  const { data: roundWindow } = await supabase
+    .from('round_windows')
+    .select('window_start, window_end')
+    .eq('season', game.season)
+    .eq('round', game.round)
+    .eq('league', game.league)
+    .single();
+
+  if (!roundWindow) {
+    return NextResponse.json({ error: 'No round window found for this game' }, { status: 404 });
+  }
+
+  const now = new Date();
+  const windowEnd = new Date(roundWindow.window_end);
+
+  // Calculate grace period
+  const maxGraceMs = 15 * 60 * 1000; // 15 minutes
+  const remainingWindowMs = windowEnd.getTime() - now.getTime();
+  const gracePeriodMs = Math.min(maxGraceMs, Math.max(60 * 1000, remainingWindowMs));
+  const graceEndsAt = new Date(now.getTime() + gracePeriodMs);
+  const graceMinutes = Math.ceil(gracePeriodMs / (60 * 1000));
+
+  // Create claim
+  const { data: claim, error: claimError } = await supabase
+    .from('no_show_claims')
+    .insert({
+      game_id: gameId,
+      claimed_by: player_id,
+      claimed_against: opponentId,
+      claimed_at: now.toISOString(),
+      grace_ends_at: graceEndsAt.toISOString(),
+    })
+    .select('id')
+    .single();
+
+  if (claimError) {
+    return NextResponse.json({ error: claimError.message }, { status: 500 });
+  }
+
+  // Notify opponent
+  await supabase.from('notifications').insert({
+    player_id: opponentId,
+    type: 'no_show_claimed',
+    title: '⚠️ No-Show Claimed Against You',
+    message: `Your opponent has claimed you as a no-show. You have ${graceMinutes} minutes to join the game before automatic forfeit.`,
+    game_id: gameId,
+  });
+
+  // Send push notification
+  try {
+    const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
+    await fetch(`${appUrl}/api/push/send`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-internal-secret': process.env.INTERNAL_API_SECRET || '',
+      },
+      body: JSON.stringify({
+        player_ids: [opponentId],
+        title: '⚠️ No-Show Claimed',
+        body: `Your opponent claimed you as a no-show. Join within ${graceMinutes} minutes.`,
+        url: `/play/${gameId}`,
+        tag: `no-show-${gameId}`,
+      }),
+    });
+  } catch {}
+
+  return NextResponse.json({
+    success: true,
+    claim_id: claim.id,
+    grace_ends_at: graceEndsAt.toISOString(),
+    grace_minutes: graceMinutes,
+  });
+}
+
+export async function DELETE(
+  req: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const { id: gameId } = await params;
+  const supabase = adminSupabase();
+
+  const { data: claim } = await supabase
+    .from('no_show_claims')
+    .select('id, claimed_against')
+    .eq('game_id', gameId)
+    .is('resolved_at', null)
+    .single();
+
+  if (claim) {
+    await supabase
+      .from('no_show_claims')
+      .update({ resolved_at: new Date().toISOString(), resolution: 'opponent_joined' })
+      .eq('id', claim.id);
+
+    // Notify the claimed-against player that the claim is resolved
+    await supabase.from('notifications').insert({
+      player_id: claim.claimed_against,
+      type: 'no_show_resolved',
+      title: '✅ No-Show Claim Resolved',
+      message: 'The no-show claim against you has been cancelled because you joined the game.',
+      game_id: gameId,
+    });
+  }
+
+  return NextResponse.json({ success: true });
+}
+</file>
+
 <file path="src/app/api/games/[id]/route.ts">
 import { createServerClient } from "@/lib/supabase";
 import { NextRequest, NextResponse } from "next/server";
@@ -3385,6 +2818,45 @@ export async function GET(req: NextRequest) {
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json({ notifications: data, unread: data?.filter(n => !n.is_read).length || 0 });
+}
+</file>
+
+<file path="src/app/api/notifications/send/route.ts">
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+
+const adminSupabase = () =>
+  createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!
+  );
+
+export async function POST(req: NextRequest) {
+  if (req.headers.get('x-internal-secret') !== process.env.INTERNAL_API_SECRET) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  const { player_id, type, title, message, game_id } = await req.json();
+
+  if (!player_id || !title || !message) {
+    return NextResponse.json({ error: 'player_id, title, and message required' }, { status: 400 });
+  }
+
+  const supabase = adminSupabase();
+
+  const { error } = await supabase.from('notifications').insert({
+    player_id,
+    type: type || 'admin_action',
+    title,
+    message,
+    game_id: game_id || null,
+  });
+
+  if (error) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+
+  return NextResponse.json({ success: true });
 }
 </file>
 
@@ -3749,6 +3221,148 @@ export async function POST(req: NextRequest) {
     success: true,
     message: "Email verified successfully",
   });
+}
+</file>
+
+<file path="src/app/api/push/send/route.ts">
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+
+const adminSupabase = () =>
+  createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!
+  );
+
+interface PushSubscriptionRow {
+  id: string;
+  player_id: string;
+  endpoint: string;
+  p256dh: string;
+  auth: string;
+}
+
+export async function POST(req: NextRequest) {
+  if (req.headers.get('x-internal-secret') !== process.env.INTERNAL_API_SECRET) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  const { player_ids, title, body, url, tag } = await req.json();
+
+  if (!player_ids?.length || !title || !body || !url) {
+    return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
+  }
+
+  const supabase = adminSupabase();
+
+  const { data: subscriptions, error } = await supabase
+    .from('push_subscriptions')
+    .select('*')
+    .in('player_id', player_ids);
+
+  if (error || !subscriptions?.length) {
+    return NextResponse.json({ sent: 0, error: 'No subscriptions found' });
+  }
+
+  let sent = 0;
+  let failed = 0;
+
+  for (const sub of subscriptions as PushSubscriptionRow[]) {
+    try {
+      const response = await fetch(sub.endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title,
+          body,
+          data: { url },
+          tag: tag || 'ss4-notification',
+          requireInteraction: true,
+        }),
+      });
+
+      if (response.ok || response.status === 201) {
+        sent++;
+      } else {
+        failed++;
+        if (response.status === 410) {
+          await supabase.from('push_subscriptions').delete().eq('id', sub.id);
+        }
+      }
+    } catch {
+      failed++;
+    }
+  }
+
+  return NextResponse.json({ sent, failed, total: subscriptions.length });
+}
+</file>
+
+<file path="src/app/api/push/subscribe/route.ts">
+// src/app/api/push/subscribe/route.ts
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+
+const adminSupabase = () =>
+  createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!
+  );
+
+export async function POST(req: NextRequest) {
+  const { player_id, endpoint, p256dh, auth } = await req.json();
+
+  if (!player_id || !endpoint || !p256dh || !auth) {
+    return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
+  }
+
+  const supabase = adminSupabase();
+
+  const { error } = await supabase
+    .from('push_subscriptions')
+    .upsert(
+      { player_id, endpoint, p256dh, auth },
+      { onConflict: 'player_id,endpoint' }
+    );
+
+  if (error) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+
+  return NextResponse.json({ success: true });
+}
+</file>
+
+<file path="src/app/api/push/unsubscribe/route.ts">
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+
+const adminSupabase = () =>
+  createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!
+  );
+
+export async function POST(req: NextRequest) {
+  const { player_id, endpoint } = await req.json();
+
+  if (!player_id || !endpoint) {
+    return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
+  }
+
+  const supabase = adminSupabase();
+
+  const { error } = await supabase
+    .from('push_subscriptions')
+    .delete()
+    .eq('player_id', player_id)
+    .eq('endpoint', endpoint);
+
+  if (error) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+
+  return NextResponse.json({ success: true });
 }
 </file>
 
@@ -4543,6 +4157,59 @@ export function StandingsTable({ rows, showPromotion, showRelegation }: Props) {
 }
 </file>
 
+<file path="src/components/ui/CountdownBadge.tsx">
+// src/components/ui/CountdownBadge.tsx
+'use client';
+import { useCountdown } from '@/hooks/useCountdown';
+import { Clock, Play, AlertTriangle, XCircle } from 'lucide-react';
+
+interface Props {
+  window: { window_start: string; window_end: string; status: string } | null | undefined;
+  roundNumber?: number;
+  className?: string;
+  compact?: boolean;
+}
+
+export function CountdownBadge({ window, roundNumber, className = '', compact = false }: Props) {
+  const countdown = useCountdown(window);
+
+  if (countdown.status === 'none') return null;
+
+  const config = {
+    upcoming: {
+      icon: <Clock size={compact ? 11 : 14} />,
+      bg: 'bg-blue-900/30 border-blue-700/50',
+      text: 'text-blue-300',
+    },
+    open: {
+      icon: <Play size={compact ? 11 : 14} className="animate-pulse" />,
+      bg: 'bg-green-900/30 border-green-700/50',
+      text: 'text-green-300',
+    },
+    closing_soon: {
+      icon: <AlertTriangle size={compact ? 11 : 14} />,
+      bg: 'bg-amber-900/30 border-amber-700/50',
+      text: 'text-amber-300',
+    },
+    closed: {
+      icon: <XCircle size={compact ? 11 : 14} />,
+      bg: 'bg-red-900/30 border-red-700/50',
+      text: 'text-red-300',
+    },
+  }[countdown.status];
+
+  return (
+    <div className={`flex items-center gap-2 px-3 py-2 rounded-lg border ${config.bg} ${config.text} text-xs font-medium ${className}`}>
+      {config.icon}
+      <span>
+        {roundNumber ? `R${roundNumber}: ` : ''}
+        {countdown.label}
+      </span>
+    </div>
+  );
+}
+</file>
+
 <file path="src/components/ui/index.tsx">
 'use client';
 import { createContext, useContext, useState, useEffect, useRef, useCallback, ReactNode } from 'react';
@@ -4661,6 +4328,143 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 }
 
 export function useToast() { return useContext(ToastContext); }
+</file>
+
+<file path="src/hooks/useCountdown.ts">
+// src/hooks/useCountdown.ts
+'use client';
+import { useEffect, useState, useCallback } from 'react';
+
+export interface CountdownState {
+  status: 'upcoming' | 'open' | 'closing_soon' | 'closed' | 'none';
+  label: string;
+  timeLeft: string;
+  isOpen: boolean;
+  isClosed: boolean;
+  windowStart: Date | null;
+  windowEnd: Date | null;
+  secondsToStart: number;
+  secondsToEnd: number;
+}
+
+interface RoundWindow {
+  window_start: string;
+  window_end: string;
+  status: string;
+}
+
+export function useCountdown(window: RoundWindow | null | undefined): CountdownState {
+  const [now, setNow] = useState(() => new Date());
+
+  useEffect(() => {
+    const interval = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(interval);
+  }, []);
+
+  if (!window || !window.window_start || !window.window_end) {
+    return {
+      status: 'none',
+      label: 'No window scheduled',
+      timeLeft: '--:--:--',
+      isOpen: false,
+      isClosed: false,
+      windowStart: null,
+      windowEnd: null,
+      secondsToStart: 0,
+      secondsToEnd: 0,
+    };
+  }
+
+  const start = new Date(window.window_start);
+  const end = new Date(window.window_end);
+  const diffToStart = start.getTime() - now.getTime();
+  const diffToEnd = end.getTime() - now.getTime();
+
+  // Already closed by status
+  if (window.status === 'closed') {
+    return {
+      status: 'closed',
+      label: 'Window closed',
+      timeLeft: '00:00:00',
+      isOpen: false,
+      isClosed: true,
+      windowStart: start,
+      windowEnd: end,
+      secondsToStart: 0,
+      secondsToEnd: 0,
+    };
+  }
+
+  if (diffToStart > 0) {
+    // Window hasn't started yet
+    const days = Math.floor(diffToStart / (1000 * 60 * 60 * 24));
+    const hours = Math.floor((diffToStart % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+    const minutes = Math.floor((diffToStart % (1000 * 60 * 60)) / (1000 * 60));
+    const seconds = Math.floor((diffToStart % (1000 * 60)) / 1000);
+
+    let label: string;
+    if (days > 0) {
+      label = `Starts in ${days}d ${hours}h`;
+    } else if (hours > 0) {
+      label = `Starts in ${hours}h ${minutes}m`;
+    } else if (minutes > 0) {
+      label = `Starts in ${minutes}m ${seconds}s`;
+    } else {
+      label = `Starts in ${seconds}s`;
+    }
+
+    return {
+      status: 'upcoming',
+      label,
+      timeLeft: `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`,
+      isOpen: false,
+      isClosed: false,
+      windowStart: start,
+      windowEnd: end,
+      secondsToStart: Math.floor(diffToStart / 1000),
+      secondsToEnd: Math.floor(diffToEnd / 1000),
+    };
+  }
+
+  if (diffToEnd > 0) {
+    // Window is open
+    const minutesLeft = Math.floor(diffToEnd / (1000 * 60));
+    const seconds = Math.floor((diffToEnd % (1000 * 60)) / 1000);
+    const closingSoon = diffToEnd < 15 * 60 * 1000; // 15 minutes
+
+    let label: string;
+    if (closingSoon) {
+      label = `Closes in ${minutesLeft}:${String(seconds).padStart(2, '0')}`;
+    } else {
+      label = 'Window open — join now!';
+    }
+
+    return {
+      status: closingSoon ? 'closing_soon' : 'open',
+      label,
+      timeLeft: `${String(Math.floor(minutesLeft / 60)).padStart(2, '0')}:${String(minutesLeft % 60).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`,
+      isOpen: true,
+      isClosed: false,
+      windowStart: start,
+      windowEnd: end,
+      secondsToStart: 0,
+      secondsToEnd: Math.floor(diffToEnd / 1000),
+    };
+  }
+
+  // Window ended
+  return {
+    status: 'closed',
+    label: 'Window closed',
+    timeLeft: '00:00:00',
+    isOpen: false,
+    isClosed: true,
+    windowStart: start,
+    windowEnd: end,
+    secondsToStart: 0,
+    secondsToEnd: 0,
+  };
+}
 </file>
 
 <file path="src/lib/fixture-generator.ts">
@@ -5111,6 +4915,116 @@ export async function GET_OpeningRepertoire(req: NextRequest) {
 }
 </file>
 
+<file path="src/lib/push-notifications.ts">
+const VAPID_PUBLIC_KEY = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY || "";
+
+export async function subscribeToPush(
+  playerId: string,
+): Promise<PushSubscription | null> {
+  if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
+    console.warn("[push] Push notifications not supported");
+    return null;
+  }
+
+  try {
+    const registration = await navigator.serviceWorker.ready;
+
+    const existingSubscription =
+      await registration.pushManager.getSubscription();
+    if (existingSubscription) {
+      await saveSubscription(playerId, existingSubscription);
+      return existingSubscription;
+    }
+
+    if (!VAPID_PUBLIC_KEY) {
+      console.error("[push] VAPID_PUBLIC_KEY not configured");
+      return null;
+    }
+
+    const subscription = await registration.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: urlBase64ToUint8Array(
+        VAPID_PUBLIC_KEY,
+      ) as BufferSource,
+    });
+
+    await saveSubscription(playerId, subscription);
+    return subscription;
+  } catch (error) {
+    console.error("[push] Subscription failed:", error);
+    return null;
+  }
+}
+
+export async function unsubscribeFromPush(playerId: string): Promise<void> {
+  try {
+    const registration = await navigator.serviceWorker.ready;
+    const subscription = await registration.pushManager.getSubscription();
+    if (subscription) {
+      await subscription.unsubscribe();
+      await fetch("/api/push/unsubscribe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          player_id: playerId,
+          endpoint: subscription.endpoint,
+        }),
+      });
+    }
+  } catch (error) {
+    console.error("[push] Unsubscribe failed:", error);
+  }
+}
+
+export async function checkNotificationPermission(): Promise<NotificationPermission> {
+  if (!("Notification" in window)) return "denied";
+
+  let permission = Notification.permission;
+
+  if (permission === "default") {
+    permission = await Notification.requestPermission();
+  }
+
+  return permission;
+}
+
+async function saveSubscription(
+  playerId: string,
+  subscription: PushSubscription,
+): Promise<void> {
+  const key = subscription.getKey("p256dh");
+  const auth = subscription.getKey("auth");
+
+  if (!key || !auth) return;
+
+  try {
+    await fetch("/api/push/subscribe", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        player_id: playerId,
+        endpoint: subscription.endpoint,
+        p256dh: btoa(String.fromCharCode(...new Uint8Array(key))),
+        auth: btoa(String.fromCharCode(...new Uint8Array(auth))),
+      }),
+    });
+  } catch (error) {
+    console.error("[push] Failed to save subscription:", error);
+  }
+}
+
+function urlBase64ToUint8Array(base64String: string): Uint8Array {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const rawData = atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+  for (let i = 0; i < rawData.length; ++i) {
+    outputArray[i] = rawData.charCodeAt(i);
+  }
+  return outputArray;
+}
+</file>
+
 <file path="src/lib/scel-generator.ts">
 // src/lib/scel-generator.ts
 
@@ -5520,6 +5434,92 @@ DO $$ BEGIN
       USING (player_id IN (SELECT id FROM public.players WHERE auth_user_id = auth.uid()));
   END IF;
 END $$;
+</file>
+
+<file path="supabase/migration_v5_play_windows.sql">
+-- migration_v5_play_windows.sql
+-- Run in Supabase SQL Editor
+
+-- ── Round Windows ───────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS round_windows (
+  id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  season          INTEGER NOT NULL REFERENCES seasons(id),
+  competition     TEXT NOT NULL CHECK (competition IN ('league', 'scel', 'champions_league', 'continental_shield', 'blitz', 'newcomer_shield')),
+  round           INTEGER NOT NULL,
+  league          TEXT, -- NULL for non-league competitions
+  window_start    TIMESTAMPTZ NOT NULL,
+  window_end      TIMESTAMPTZ NOT NULL,
+  status          TEXT NOT NULL DEFAULT 'scheduled' CHECK (status IN ('scheduled', 'open', 'closed')),
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE(season, competition, round, league)
+);
+
+CREATE INDEX IF NOT EXISTS idx_round_windows_status ON round_windows(status, window_start);
+
+-- ── No-Show Claims ──────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS no_show_claims (
+  id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  game_id         UUID NOT NULL REFERENCES games(id) ON DELETE CASCADE,
+  claimed_by      UUID NOT NULL REFERENCES players(id),
+  claimed_against UUID NOT NULL REFERENCES players(id),
+  claimed_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  grace_ends_at   TIMESTAMPTZ NOT NULL,
+  resolved_at     TIMESTAMPTZ,
+  resolution      TEXT CHECK (resolution IN ('auto_forfeit', 'opponent_joined', 'cancelled', 'manual')),
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_no_show_claims_game ON no_show_claims(game_id);
+CREATE INDEX IF NOT EXISTS idx_no_show_claims_pending ON no_show_claims(resolved_at) WHERE resolved_at IS NULL;
+
+-- ── WhatsApp Notifications Log ─────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS whatsapp_logs (
+  id              UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  player_id       UUID REFERENCES players(id),
+  phone_number    TEXT NOT NULL,
+  template_name   TEXT NOT NULL,
+  message_body    TEXT NOT NULL,
+  status          TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'sent', 'failed', 'delivered', 'read')),
+  meta_message_id TEXT,
+  error_message   TEXT,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_whatsapp_logs_player ON whatsapp_logs(player_id);
+CREATE INDEX IF NOT EXISTS idx_whatsapp_logs_status ON whatsapp_logs(status);
+
+-- ── Extend notifications table for nudge ──────────────────────────────────
+ALTER TABLE notifications DROP CONSTRAINT IF EXISTS notifications_type_check;
+ALTER TABLE notifications ADD CONSTRAINT notifications_type_check
+  CHECK (type IN (
+    'fixture_scheduled','round_start','deadline_reminder',
+    'result_recorded','cl_qualified','cup_qualified',
+    'badge_awarded','suspension','rating_update',
+    'casual_challenge','casual_accepted','casual_declined',
+    'draft_result','admin_action','nudge',
+    'no_show_claimed','no_show_resolved','round_starting_soon',
+    'window_open','window_closed','season_starting'
+  ));
+
+-- ── Ensure whatsapp_number is NOT NULL for active players ─────────────────
+-- (We'll enforce this in the registration API, but add a partial index for queries)
+CREATE INDEX IF NOT EXISTS idx_players_whatsapp ON players(whatsapp_number) 
+  WHERE is_active = TRUE AND whatsapp_number IS NOT NULL;
+
+-- ── Real-time enable the new tables ───────────────────────────────────────
+ALTER PUBLICATION supabase_realtime ADD TABLE round_windows;
+ALTER PUBLICATION supabase_realtime ADD TABLE no_show_claims;
+
+-- Add to migration_v5_play_windows.sql or run separately
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  player_id UUID REFERENCES players(id) ON DELETE CASCADE,
+  endpoint TEXT NOT NULL,
+  p256dh TEXT NOT NULL,
+  auth TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE(player_id, endpoint)
+);
 </file>
 
 <file path="tailwind.config.js">
@@ -5951,6 +5951,105 @@ describe('Standings Tiebreakers', () => {
     "vitest": "^1.6.1"
   }
 }
+</file>
+
+<file path="public/sw.js">
+const CACHE_NAME = 'ss4-chess-v1';
+const STATIC_ASSETS = [
+  '/',
+  '/manifest.json',
+  '/stockfish/stockfish-nnue-16.js',
+  '/stockfish/stockfish-nnue-16.wasm',
+];
+
+// Install: cache static assets
+self.addEventListener('install', (event) => {
+  event.waitUntil(
+    caches.open(CACHE_NAME).then(cache => cache.addAll(STATIC_ASSETS)).then(() => self.skipWaiting())
+  );
+});
+
+// Activate: clear old caches
+self.addEventListener('activate', (event) => {
+  event.waitUntil(
+    caches.keys().then(keys =>
+      Promise.all(keys.filter(k => k !== CACHE_NAME).map(k => caches.delete(k)))
+    ).then(() => self.clients.claim())
+  );
+});
+
+// Fetch: cache-first for game review pages and static, network-first for API
+self.addEventListener('fetch', (event) => {
+  const { request } = event;
+  const url = new URL(request.url);
+
+  // Never cache API routes or socket connections
+  if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/socket.io/')) {
+    return;
+  }
+
+  // Cache-first for game review (so analysis works offline)
+  if (url.pathname.startsWith('/game/') && url.pathname.endsWith('/review')) {
+    event.respondWith(
+      caches.match(request).then(cached => {
+        const networkFetch = fetch(request).then(res => {
+          if (res.ok) {
+            const clone = res.clone();
+            caches.open(CACHE_NAME).then(cache => cache.put(request, clone));
+          }
+          return res;
+        });
+        return cached ?? networkFetch;
+      })
+    );
+    return;
+  }
+
+  // Network-first for everything else, fall back to cache
+  event.respondWith(
+    fetch(request).catch(() => caches.match(request))
+  );
+});
+
+// Push notifications
+self.addEventListener('push', (event) => {
+  if (!event.data) return;
+
+  let payload;
+  try {
+    payload = event.data.json();
+  } catch {
+    const text = event.data.text();
+    payload = { title: 'SS4 Chess', body: text, data: { url: '/dashboard' } };
+  }
+
+  const { title, body, data, tag } = payload;
+
+  event.waitUntil(
+    self.registration.showNotification(title || 'SS4 Chess League', {
+      body: body || '',
+      icon: '/icons/icon-192.png',
+      badge: '/icons/icon-192.png',
+      data: { url: data?.url || '/dashboard' },
+      tag: tag || 'ss4-notification',
+      requireInteraction: true,
+      vibrate: [200, 100, 200],
+    })
+  );
+});
+
+// Notification click → open relevant page
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const targetUrl = event.notification.data?.url ?? '/dashboard';
+  event.waitUntil(
+    self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then(clients => {
+      const existing = clients.find(c => c.url.includes(self.location.origin));
+      if (existing) { existing.focus(); existing.navigate(targetUrl); }
+      else self.clients.openWindow(targetUrl);
+    })
+  );
+});
 </file>
 
 <file path="scripts/check-league-balance.ts">
@@ -13484,193 +13583,6 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
 }
 </file>
 
-<file path="src/app/api/players/route.ts">
-/**
- * FILE: src/app/api/players/route.ts
- *
- * Auth: Email + password only.
- * Verification: Supabase sends confirmation email via Resend SMTP (3,000/month free).
- * No SMS, no custom OTP, no third-party auth complexity.
- */
-
-import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
-import { fetchChessComRating, fetchLichessRating } from '@/lib/chess-com-api';
-
-const adminDb = () =>
-  createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!
-  );
-
-// ─── POST /api/players — Register (NEW PLAYERS ONLY) ─────────────────────────
-export async function POST(req: NextRequest) {
-  const body = await req.json();
-  const {
-    full_name, email, password,
-    chess_com_username, lichess_username,
-    whatsapp_number, year_started_chess,
-  } = body;
-
-  // Validation
-  if (!full_name?.trim() || !email?.trim() || !password)
-    return NextResponse.json({ error: 'Name, email, and password are required.' }, { status: 400 });
-  if (password.length < 8)
-    return NextResponse.json({ error: 'Password must be at least 8 characters.' }, { status: 400 });
-  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
-    return NextResponse.json({ error: 'Invalid email address.' }, { status: 400 });
-
-  // WhatsApp validation (required)
-  if (!whatsapp_number?.trim() || !/^(\+234|234|0)[7-9]\d{9}$/.test(whatsapp_number.replace(/[\s\-\(\)]/g, ''))) {
-    return NextResponse.json({ error: 'A valid Nigerian WhatsApp number is required (+234, 234, or 0 prefix).' }, { status: 400 });
-  }
-
-  const supabase = adminDb();
-
-  // ── Check if this email is already registered ─────────────────────────────
-  const { data: existingPlayer } = await supabase
-    .from('players')
-    .select('id, full_name, is_active, games_played')
-    .eq('email', email.toLowerCase().trim())
-    .single();
-
-  // Returning player — don't let them register again
-  if (existingPlayer) {
-    return NextResponse.json({
-      error: existingPlayer.is_active
-        ? 'You are already registered. Sign in to continue.'
-        : 'You already have an account. Sign in to reactivate for the new season.',
-      is_returning: true,
-    }, { status: 409 });
-  }
-
-  // Open season check
-  const { data: season } = await supabase
-    .from('seasons')
-    .select('id, name, status, registration_start, registration_end')
-    .in('status', ['registration', 'draft'])
-    .order('id', { ascending: false })
-    .limit(1)
-    .single();
-
-  if (!season)
-    return NextResponse.json({ error: 'Registration is not currently open.' }, { status: 400 });
-
-  // Check registration window
-  const now = new Date();
-  if (season.registration_start && new Date(season.registration_start) > now) {
-    return NextResponse.json({ error: 'Registration has not opened yet. Check back soon.' }, { status: 400 });
-  }
-  if (season.registration_end && new Date(season.registration_end) < now) {
-    return NextResponse.json({ error: 'Registration for this season has closed.' }, { status: 400 });
-  }
-
-  // ── NEW PLAYER: Seed rating from Chess.com/Lichess or calibration ────────
-  let seedRating = 1000, seedSource = 'default';
-  if (chess_com_username?.trim()) {
-    const r = await fetchChessComRating(chess_com_username.trim());
-    if (r.success && r.rapid_rating) { seedRating = r.rapid_rating; seedSource = 'chess_com_api'; }
-  } else if (lichess_username?.trim()) {
-    const r = await fetchLichessRating(lichess_username.trim());
-    if (r.success && r.rapid_rating) { seedRating = r.rapid_rating; seedSource = 'lichess_api'; }
-  }
-  const needsCalibration = seedSource === 'default';
-
-  // Create Supabase Auth user
-  const { data: authData, error: authError } = await supabase.auth.admin.createUser({
-    email: email.toLowerCase().trim(),
-    password,
-    email_confirm: false,
-    user_metadata: { full_name: full_name.trim() },
-  });
-
-  if (authError) {
-    if (authError.message.includes('already been registered'))
-      return NextResponse.json({ error: 'This email is already registered.' }, { status: 409 });
-    return NextResponse.json({ error: `Account creation failed: ${authError.message}` }, { status: 400 });
-  }
-
-  // Insert new player record
-  const { data: player, error: playerError } = await supabase
-    .from('players')
-    .insert({
-      full_name:            full_name.trim(),
-      email:                email.toLowerCase().trim(),
-      chess_com_username:   chess_com_username?.trim() || null,
-      lichess_username:     lichess_username?.trim() || null,
-      whatsapp_number:      whatsapp_number.trim(),
-      year_started_chess:   year_started_chess ? Number(year_started_chess) : null,
-      joining_season:       season.id,
-      home_league:          'unassigned',
-      ss4_rating:           needsCalibration ? 1000 : seedRating,
-      rating_deviation:     200,
-      volatility:           0.06,
-      seed_rating:          needsCalibration ? null : seedRating,
-      seed_source:          seedSource,
-      calibration_complete: !needsCalibration,
-      auth_user_id:         authData.user?.id ?? null,
-      is_active:            true,
-      is_verified:          false,
-    })
-    .select('id').single();
-
-  if (playerError) {
-    await supabase.auth.admin.deleteUser(authData.user!.id);
-    return NextResponse.json({ error: playerError.message }, { status: 500 });
-  }
-
-  // Pioneer badge for Season 1
-  if (season.id === 1) {
-    await supabase.from('player_badges').insert({
-      player_id: player.id, badge_type: 'pioneer_s1',
-      season: 1, description: 'Founding member of the SS4 Chess League',
-    });
-  }
-
-  // Welcome notification
-  await supabase.from('notifications').insert({
-    player_id: player.id,
-    type: 'welcome',
-    title: 'Welcome to SS4 Chess League!',
-    message: needsCalibration
-      ? `Check your email to verify your account, then complete 5 bot calibration games before the draft.`
-      : `Check your email to verify your account. Your seed rating is ${seedRating} (${seedSource === 'chess_com_api' ? 'Chess.com' : 'Lichess'} rapid).`,
-  });
-
-  return NextResponse.json({
-    success: true,
-    player_id: player.id,
-    is_returning: false,
-    needs_calibration: needsCalibration,
-    seed_rating: needsCalibration ? null : seedRating,
-    seed_source: seedSource,
-    message: `Account created! Check ${email} for a confirmation link before signing in.`,
-  });
-}
-
-// ─── GET /api/players — List active players ───────────────────────────────────
-export async function GET(req: NextRequest) {
-  const supabase = adminDb();
-  const { searchParams } = new URL(req.url);
-  const league = searchParams.get('league');
-  const tier   = searchParams.get('tier');
-  const search = searchParams.get('q');
-
-  let query = supabase
-    .from('players')
-    .select('id, full_name, home_league, ss4_rating, rating_deviation, is_provisional, joining_season, games_played, chess_com_username, calibration_complete')
-    .eq('is_active', true)
-    .order('ss4_rating', { ascending: false });
-
-  if (league) query = query.eq('home_league', league);
-  if (search) query = query.ilike('full_name', `%${search}%`);
-
-  const { data, error } = await query;
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json({ players: data });
-}
-</file>
-
 <file path="src/app/casual/[challengeId]/page.tsx">
 'use client';
 import { supabase } from '@/lib/supabase';
@@ -14749,6 +14661,193 @@ async function analyseGameServerSide(pgn) {
 module.exports = { initGameEngine, queuePosition, flushGameAnalysis, destroyGameEngine, analyseGameServerSide };
 </file>
 
+<file path="src/app/api/players/route.ts">
+/**
+ * FILE: src/app/api/players/route.ts
+ *
+ * Auth: Email + password only.
+ * Verification: Supabase sends confirmation email via Resend SMTP (3,000/month free).
+ * No SMS, no custom OTP, no third-party auth complexity.
+ */
+
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+import { fetchChessComRating, fetchLichessRating } from '@/lib/chess-com-api';
+
+const adminDb = () =>
+  createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!
+  );
+
+// ─── POST /api/players — Register (NEW PLAYERS ONLY) ─────────────────────────
+export async function POST(req: NextRequest) {
+  const body = await req.json();
+  const {
+    full_name, email, password,
+    chess_com_username, lichess_username,
+    whatsapp_number, year_started_chess,
+  } = body;
+
+  // Validation
+  if (!full_name?.trim() || !email?.trim() || !password)
+    return NextResponse.json({ error: 'Name, email, and password are required.' }, { status: 400 });
+  if (password.length < 8)
+    return NextResponse.json({ error: 'Password must be at least 8 characters.' }, { status: 400 });
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
+    return NextResponse.json({ error: 'Invalid email address.' }, { status: 400 });
+
+  // WhatsApp validation (required)
+  if (!whatsapp_number?.trim() || !/^(\+234|234|0)[7-9]\d{9}$/.test(whatsapp_number.replace(/[\s\-\(\)]/g, ''))) {
+    return NextResponse.json({ error: 'A valid Nigerian WhatsApp number is required (+234, 234, or 0 prefix).' }, { status: 400 });
+  }
+
+  const supabase = adminDb();
+
+  // ── Check if this email is already registered ─────────────────────────────
+  const { data: existingPlayer } = await supabase
+    .from('players')
+    .select('id, full_name, is_active, games_played')
+    .eq('email', email.toLowerCase().trim())
+    .single();
+
+  // Returning player — don't let them register again
+  if (existingPlayer) {
+    return NextResponse.json({
+      error: existingPlayer.is_active
+        ? 'You are already registered. Sign in to continue.'
+        : 'You already have an account. Sign in to reactivate for the new season.',
+      is_returning: true,
+    }, { status: 409 });
+  }
+
+  // Open season check
+  const { data: season } = await supabase
+    .from('seasons')
+    .select('id, name, status, registration_start, registration_end')
+    .in('status', ['registration', 'draft'])
+    .order('id', { ascending: false })
+    .limit(1)
+    .single();
+
+  if (!season)
+    return NextResponse.json({ error: 'Registration is not currently open.' }, { status: 400 });
+
+  // Check registration window
+  const now = new Date();
+  if (season.registration_start && new Date(season.registration_start) > now) {
+    return NextResponse.json({ error: 'Registration has not opened yet. Check back soon.' }, { status: 400 });
+  }
+  if (season.registration_end && new Date(season.registration_end) < now) {
+    return NextResponse.json({ error: 'Registration for this season has closed.' }, { status: 400 });
+  }
+
+  // ── NEW PLAYER: Seed rating from Chess.com/Lichess or calibration ────────
+  let seedRating = 1000, seedSource = 'default';
+  if (chess_com_username?.trim()) {
+    const r = await fetchChessComRating(chess_com_username.trim());
+    if (r.success && r.rapid_rating) { seedRating = r.rapid_rating; seedSource = 'chess_com_api'; }
+  } else if (lichess_username?.trim()) {
+    const r = await fetchLichessRating(lichess_username.trim());
+    if (r.success && r.rapid_rating) { seedRating = r.rapid_rating; seedSource = 'lichess_api'; }
+  }
+  const needsCalibration = seedSource === 'default';
+
+  // Create Supabase Auth user
+  const { data: authData, error: authError } = await supabase.auth.admin.createUser({
+    email: email.toLowerCase().trim(),
+    password,
+    email_confirm: false,
+    user_metadata: { full_name: full_name.trim() },
+  });
+
+  if (authError) {
+    if (authError.message.includes('already been registered'))
+      return NextResponse.json({ error: 'This email is already registered.' }, { status: 409 });
+    return NextResponse.json({ error: `Account creation failed: ${authError.message}` }, { status: 400 });
+  }
+
+  // Insert new player record
+  const { data: player, error: playerError } = await supabase
+    .from('players')
+    .insert({
+      full_name:            full_name.trim(),
+      email:                email.toLowerCase().trim(),
+      chess_com_username:   chess_com_username?.trim() || null,
+      lichess_username:     lichess_username?.trim() || null,
+      whatsapp_number:      whatsapp_number.trim(),
+      year_started_chess:   year_started_chess ? Number(year_started_chess) : null,
+      joining_season:       season.id,
+      home_league:          'unassigned',
+      ss4_rating:           needsCalibration ? 1000 : seedRating,
+      rating_deviation:     200,
+      volatility:           0.06,
+      seed_rating:          needsCalibration ? null : seedRating,
+      seed_source:          seedSource,
+      calibration_complete: !needsCalibration,
+      auth_user_id:         authData.user?.id ?? null,
+      is_active:            true,
+      is_verified:          false,
+    })
+    .select('id').single();
+
+  if (playerError) {
+    await supabase.auth.admin.deleteUser(authData.user!.id);
+    return NextResponse.json({ error: playerError.message }, { status: 500 });
+  }
+
+  // Pioneer badge for Season 1
+  if (season.id === 1) {
+    await supabase.from('player_badges').insert({
+      player_id: player.id, badge_type: 'pioneer_s1',
+      season: 1, description: 'Founding member of the SS4 Chess League',
+    });
+  }
+
+  // Welcome notification
+  await supabase.from('notifications').insert({
+    player_id: player.id,
+    type: 'welcome',
+    title: 'Welcome to SS4 Chess League!',
+    message: needsCalibration
+      ? `Check your email to verify your account, then complete 5 bot calibration games before the draft.`
+      : `Check your email to verify your account. Your seed rating is ${seedRating} (${seedSource === 'chess_com_api' ? 'Chess.com' : 'Lichess'} rapid).`,
+  });
+
+  return NextResponse.json({
+    success: true,
+    player_id: player.id,
+    is_returning: false,
+    needs_calibration: needsCalibration,
+    seed_rating: needsCalibration ? null : seedRating,
+    seed_source: seedSource,
+    message: `Account created! Check ${email} for a confirmation link before signing in.`,
+  });
+}
+
+// ─── GET /api/players — List active players ───────────────────────────────────
+export async function GET(req: NextRequest) {
+  const supabase = adminDb();
+  const { searchParams } = new URL(req.url);
+  const league = searchParams.get('league');
+  const tier   = searchParams.get('tier');
+  const search = searchParams.get('q');
+
+  let query = supabase
+    .from('players')
+    .select('id, full_name, home_league, ss4_rating, rating_deviation, is_provisional, joining_season, games_played, chess_com_username, calibration_complete')
+    .eq('is_active', true)
+    .order('ss4_rating', { ascending: false });
+
+  if (league) query = query.eq('home_league', league);
+  if (search) query = query.ilike('full_name', `%${search}%`);
+
+  const { data, error } = await query;
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  return NextResponse.json({ players: data });
+}
+</file>
+
 <file path="src/app/casual/page.tsx">
 'use client';
 import { io, Socket } from 'socket.io-client';
@@ -15567,369 +15666,6 @@ export default async function LeaguePage({
 }
 </file>
 
-<file path="src/app/register/page.tsx">
-'use client';
-import { useRouter } from 'next/navigation';
-import { useState, useEffect } from 'react';
-
-import { supabase } from '@/lib/supabase';
-
-type Step = 'form' | 'verify' | 'calibrating' | 'done';
-
-interface SeasonStatus {
-  registration_open: boolean;
-  state: 'open' | 'upcoming' | 'closed' | 'always_open';
-  message: string;
-  season_name: string | null;
-  registration_end: string | null;
-}
-
-export default function RegisterPage() {
-  const router = useRouter();
-  const [step, setStep]     = useState<Step>('form');
-  const [loading, setLoading] = useState(false);
-  const [error, setError]   = useState('');
-  const [result, setResult] = useState<any>(null);
-  const [seasonStatus, setSeasonStatus] = useState<SeasonStatus | null>(null);
-  
-  // Cooldown timer state
-  const [countdown, setCountdown] = useState(0);
-
-  const [form, setForm] = useState({
-    full_name:          '',
-    email:              '',
-    password:           '',
-    confirm_password:   '',
-    whatsapp_number:    '',
-    chess_com_username: '',
-    lichess_username:   '',
-    year_started_chess: '',
-  });
-
-  // Fetch season status on mount
-  useEffect(() => {
-    fetch('/api/season-status')
-      .then(r => r.json())
-      .then(d => setSeasonStatus(d))
-      .catch(() => null);
-  }, []);
-
-  // Timer logic that ticks down every second
-  useEffect(() => {
-    if (countdown <= 0) return;
-    const timer = setInterval(() => setCountdown(c => c - 1), 1000);
-    return () => clearInterval(timer);
-  }, [countdown]);
-
-  const set = (k: keyof typeof form) =>
-    (e: React.ChangeEvent<HTMLInputElement>) => setForm(f => ({ ...f, [k]: e.target.value }));
-
-  const handleSubmit = async () => {
-    if (!form.full_name || !form.email || !form.password) {
-      setError('Name, email, and password are required.'); return;
-    }
-    if (form.password.length < 8) {
-      setError('Password must be at least 8 characters.'); return;
-    }
-    if (form.password !== form.confirm_password) {
-      setError('Passwords do not match.'); return;
-    }
-    // WhatsApp required validation
-    if (!form.whatsapp_number || !/^(\+234|234|0)[7-9]\d{9}$/.test(form.whatsapp_number.replace(/[\s\-\(\)]/g, ''))) {
-      setError('A valid Nigerian WhatsApp number is required (+234, 234, or 0 prefix).');
-      return;
-    }
-
-    setLoading(true); setError('');
-    try {
-      const res = await fetch('/api/players', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          full_name:          form.full_name,
-          email:              form.email,
-          password:           form.password,
-          whatsapp_number:    form.whatsapp_number.trim(),
-          chess_com_username: form.chess_com_username || undefined,
-          lichess_username:   form.lichess_username   || undefined,
-          year_started_chess: form.year_started_chess ? Number(form.year_started_chess) : undefined,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) { setError(data.error ?? 'Registration failed.'); setLoading(false); return; }
-      setResult(data);
-      localStorage.setItem('player_id', data.player_id);
-      setStep(data.needs_calibration ? 'calibrating' : 'verify');
-    } catch (e: any) {
-      setError(e.message);
-    }
-    setLoading(false);
-  };
-
-  // Handle resending the confirmation email
-  const handleResend = async () => {
-    if (countdown > 0) return;
-    setLoading(true); setError('');
-
-    const { error: err } = await supabase.auth.resend({
-      type: 'signup',
-      email: form.email,
-      options: {
-        emailRedirectTo: `${window.location.origin}/auth/callback`
-      }
-    });
-
-    setLoading(false);
-
-    if (err) {
-      if (err.status === 429) {
-        setError('Please wait a minute before requesting another link.');
-        setCountdown(60);
-      } else {
-        setError(err.message);
-      }
-      return;
-    }
-
-    setCountdown(60); // Start the 60-second cooldown
-  };
-
-  // Determine if registration is actually open for new sign-ups
-  const canRegister = seasonStatus?.state === 'open' || seasonStatus?.state === 'always_open';
-
-  // ── Check your email (Skipping Calibration) ─────────────────────────────────
-  if (step === 'verify') return (
-    <div className="min-h-screen flex items-center justify-center px-4">
-      <div className="card p-8 w-full max-w-md text-center space-y-6">
-        <div className="text-5xl">📧</div>
-        <h1 className="font-display text-2xl font-bold text-chalk">Check Your Email</h1>
-        <p className="text-ink-300 text-sm">
-          We sent a confirmation link to <strong className="text-gold">{form.email}</strong>.
-          Click it to verify your account, then sign in.
-        </p>
-        
-        {error && <p className="text-red-400 text-xs bg-red-900/20 border border-red-800 rounded-lg px-3 py-2 text-left">{error}</p>}
-
-        {result?.seed_rating && (
-          <div className="card p-4 text-left space-y-2 text-sm">
-            <div className="flex justify-between"><span className="text-ink-400">Seed Rating</span><span className="font-mono font-bold text-gold">{result.seed_rating}</span></div>
-            <div className="flex justify-between"><span className="text-ink-400">Source</span><span className="text-ink-300 capitalize">{result.seed_source?.replace(/_/g, ' ')}</span></div>
-          </div>
-        )}
-        
-        <div className="space-y-3 pt-2">
-          <button 
-            onClick={handleResend} 
-            disabled={loading || countdown > 0} 
-            className="btn-ghost w-full disabled:opacity-50"
-          >
-            {loading ? 'Sending...' : countdown > 0 ? `Resend in ${countdown}s` : 'Resend Confirmation Email'}
-          </button>
-          
-          <button onClick={() => router.push('/auth/login')} className="btn-gold w-full">
-            Go to Sign In
-          </button>
-        </div>
-        
-        <p className="text-xs text-ink-500">
-          Didn't receive it? Check spam, or{' '}
-          <button onClick={() => setStep('form')} className="text-gold hover:underline">try a different email</button>.
-        </p>
-      </div>
-    </div>
-  );
-
-  // ── Calibration required ────────────────────────────────────────────────────
-  if (step === 'calibrating') return (
-    <div className="min-h-screen flex items-center justify-center px-4">
-      <div className="card p-8 w-full max-w-md text-center space-y-6">
-        <div className="text-5xl">📧</div>
-        <h1 className="font-display text-2xl font-bold text-chalk">Verify Your Email</h1>
-        <p className="text-ink-300 text-sm">
-          We sent a confirmation link to <strong className="text-gold">{form.email}</strong>.
-        </p>
-        
-        {error && <p className="text-red-400 text-xs bg-red-900/20 border border-red-800 rounded-lg px-3 py-2 text-left">{error}</p>}
-
-        <div className="card p-4 text-left space-y-2 text-sm text-ink-300">
-          <div className="flex items-start gap-2"><span className="text-gold font-bold">1.</span> <span>Click the confirmation link in your email</span></div>
-          <div className="flex items-start gap-2"><span className="text-gold font-bold">2.</span> <span>Sign in to your new account</span></div>
-          <div className="flex items-start gap-2"><span className="text-gold font-bold">3.</span> <span>Complete 5 bot calibration games to set your rating</span></div>
-        </div>
-        
-        <p className="text-ink-500 text-xs">
-          Because no Chess.com or Lichess account was found, you must calibrate your rating before entering the draft.
-        </p>
-
-        <div className="space-y-3 pt-2">
-          <button 
-            onClick={handleResend} 
-            disabled={loading || countdown > 0} 
-            className="btn-ghost w-full disabled:opacity-50"
-          >
-            {loading ? 'Sending...' : countdown > 0 ? `Resend in ${countdown}s` : 'Resend Confirmation Email'}
-          </button>
-          
-          <button onClick={() => router.push('/auth/login')} className="btn-gold w-full">
-            Go to Sign In &rarr;
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-
-  // ── Registration closed / upcoming — show info page ─────────────────────────
-  if (seasonStatus && !canRegister) {
-    return (
-      <div className="min-h-screen flex items-center justify-center px-4">
-        <div className="card p-8 w-full max-w-md text-center space-y-6">
-          <div className="text-4xl mb-3">♟</div>
-          <h1 className="font-display text-2xl font-bold text-chalk">
-            {seasonStatus.season_name ?? 'SS4 Chess League'}
-          </h1>
-          
-          <div className="space-y-4">
-            {seasonStatus.state === 'upcoming' && (
-              <>
-                <div className="text-4xl">📅</div>
-                <p className="text-ink-300 text-sm">
-                  Registration hasn't opened yet.
-                </p>
-                <div className="card p-4 bg-blue-900/20 border border-blue-700/50 text-sm text-blue-300">
-                  {seasonStatus.message}
-                </div>
-              </>
-            )}
-            
-            {seasonStatus.state === 'closed' && (
-              <>
-                <div className="text-4xl">🔒</div>
-                <p className="text-ink-300 text-sm">
-                  Registration is currently closed.
-                </p>
-                <div className="card p-4 bg-red-900/20 border border-red-700/50 text-sm text-red-300">
-                  {seasonStatus.message}
-                </div>
-              </>
-            )}
-          </div>
-
-          <p className="text-xs text-ink-500 pt-2">
-            Already registered?{' '}
-            <a href="/auth/login" className="text-gold hover:underline">Sign in</a>
-          </p>
-        </div>
-      </div>
-    );
-  }
-
-  // ── Registration form ───────────────────────────────────────────────────────
-  return (
-    <div className="min-h-screen flex items-center justify-center px-4 py-12">
-      <div className="card p-8 w-full max-w-md space-y-6">
-        <div className="text-center">
-          <div className="text-4xl mb-3">♟</div>
-          <h1 className="font-display text-2xl font-bold text-chalk">Create Account</h1>
-          
-          {/* Season status display */}
-          {seasonStatus && (
-            <div className="mt-2">
-              <p className="text-ink-400 text-sm">
-                {seasonStatus.season_name ?? 'SS4 Chess League'}
-              </p>
-              {seasonStatus.state === 'open' && seasonStatus.registration_end && (
-                <p className="text-xs text-amber-400/80 mt-0.5">
-                  ⏳ {seasonStatus.message}
-                </p>
-              )}
-              {seasonStatus.state === 'always_open' && (
-                <p className="text-xs text-green-400/80 mt-0.5">
-                  ✅ Registration is open!
-                </p>
-              )}
-            </div>
-          )}
-          {!seasonStatus && (
-            <p className="text-ink-400 text-sm mt-1">SS4 Chess League</p>
-          )}
-        </div>
-
-        <div className="space-y-4">
-          {/* Required fields */}
-          <div>
-            <label className="section-label block mb-1.5">Full Name *</label>
-            <input className="input" placeholder="Your full name" value={form.full_name} onChange={set('full_name')} />
-          </div>
-          <div>
-            <label className="section-label block mb-1.5">Email Address *</label>
-            <input className="input" type="email" placeholder="your@email.com" value={form.email} onChange={set('email')} />
-          </div>
-          <div>
-            <label className="section-label block mb-1.5">
-              WhatsApp Number *
-              <span className="text-ink-500 normal-case"> (+234 format)</span>
-            </label>
-            <input className="input" placeholder="+234 812 345 6789" value={form.whatsapp_number} onChange={set('whatsapp_number')} />
-            {form.whatsapp_number && !/^(\+234|234|0)[7-9]\d{9}$/.test(form.whatsapp_number.replace(/[\s\-\(\)]/g, '')) && (
-              <p className="text-red-400 text-xs mt-1">Enter a valid Nigerian number (+234, 234, or 0 prefix)</p>
-            )}
-          </div>
-          <div>
-            <label className="section-label block mb-1.5">Password *</label>
-            <input className="input" type="password" placeholder="Min. 8 characters" value={form.password} onChange={set('password')} />
-          </div>
-          <div>
-            <label className="section-label block mb-1.5">Confirm Password *</label>
-            <input className="input" type="password" placeholder="Repeat password" value={form.confirm_password} onChange={set('confirm_password')}
-              onKeyDown={e => e.key === 'Enter' && handleSubmit()} />
-          </div>
-
-          {/* Optional fields */}
-          <div className="border-t border-ink-700 pt-4">
-            <p className="text-xs text-ink-400 mb-3">Optional - helps us seed your rating automatically</p>
-            <div className="space-y-3">
-              <div>
-                <label className="section-label block mb-1.5">Chess.com Username <span className="text-ink-500 normal-case">(for rating seed)</span></label>
-                <input className="input" placeholder="username" value={form.chess_com_username} onChange={set('chess_com_username')} />
-              </div>
-              <div>
-                <label className="section-label block mb-1.5">Lichess Username <span className="text-ink-500 normal-case">(alternative)</span></label>
-                <input className="input" placeholder="username" value={form.lichess_username} onChange={set('lichess_username')} />
-              </div>
-              <div>
-                <label className="section-label block mb-1.5">Year You Started Playing Chess</label>
-                <input className="input" type="number" placeholder="e.g. 2020" min="1900" max="2030" value={form.year_started_chess} onChange={set('year_started_chess')} />
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Rating seed explainer */}
-        <div className="card p-3 text-xs text-ink-400 space-y-0.5 bg-ink-900">
-          <div className="text-chalk font-medium mb-1">How rating seeding works</div>
-          <div>• Chess.com / Lichess rapid rating → instant seed, skip calibration</div>
-          <div>• No platform account → 5 bot calibration games after registration</div>
-          <div>• All ratings shown as <span className="font-mono text-gold">1234?</span> until 5 SS4 league games played</div>
-        </div>
-
-        {error && (
-          <p className="text-red-400 text-sm bg-red-900/20 border border-red-800 rounded-lg px-3 py-2">{error}</p>
-        )}
-
-        <button onClick={handleSubmit} disabled={loading} className="btn-gold w-full disabled:opacity-50">
-          {loading ? 'Creating account...' : 'Create Account'}
-        </button>
-
-        <p className="text-center text-xs text-ink-500">
-          Already registered?{' '}
-          <a href="/auth/login" className="text-gold hover:underline">Sign in</a>
-        </p>
-      </div>
-    </div>
-  );
-}
-</file>
-
 <file path="src/app/profile/[id]/page.tsx">
 import { BadgeWall } from "@/components/profile/BadgeWall";
 import { RatingChart } from "@/components/profile/RatingChart";
@@ -16294,6 +16030,369 @@ export default async function ProfilePage({
           )}
         </div>
       </section>
+    </div>
+  );
+}
+</file>
+
+<file path="src/app/register/page.tsx">
+'use client';
+import { useRouter } from 'next/navigation';
+import { useState, useEffect } from 'react';
+
+import { supabase } from '@/lib/supabase';
+
+type Step = 'form' | 'verify' | 'calibrating' | 'done';
+
+interface SeasonStatus {
+  registration_open: boolean;
+  state: 'open' | 'upcoming' | 'closed' | 'always_open';
+  message: string;
+  season_name: string | null;
+  registration_end: string | null;
+}
+
+export default function RegisterPage() {
+  const router = useRouter();
+  const [step, setStep]     = useState<Step>('form');
+  const [loading, setLoading] = useState(false);
+  const [error, setError]   = useState('');
+  const [result, setResult] = useState<any>(null);
+  const [seasonStatus, setSeasonStatus] = useState<SeasonStatus | null>(null);
+  
+  // Cooldown timer state
+  const [countdown, setCountdown] = useState(0);
+
+  const [form, setForm] = useState({
+    full_name:          '',
+    email:              '',
+    password:           '',
+    confirm_password:   '',
+    whatsapp_number:    '',
+    chess_com_username: '',
+    lichess_username:   '',
+    year_started_chess: '',
+  });
+
+  // Fetch season status on mount
+  useEffect(() => {
+    fetch('/api/season-status')
+      .then(r => r.json())
+      .then(d => setSeasonStatus(d))
+      .catch(() => null);
+  }, []);
+
+  // Timer logic that ticks down every second
+  useEffect(() => {
+    if (countdown <= 0) return;
+    const timer = setInterval(() => setCountdown(c => c - 1), 1000);
+    return () => clearInterval(timer);
+  }, [countdown]);
+
+  const set = (k: keyof typeof form) =>
+    (e: React.ChangeEvent<HTMLInputElement>) => setForm(f => ({ ...f, [k]: e.target.value }));
+
+  const handleSubmit = async () => {
+    if (!form.full_name || !form.email || !form.password) {
+      setError('Name, email, and password are required.'); return;
+    }
+    if (form.password.length < 8) {
+      setError('Password must be at least 8 characters.'); return;
+    }
+    if (form.password !== form.confirm_password) {
+      setError('Passwords do not match.'); return;
+    }
+    // WhatsApp required validation
+    if (!form.whatsapp_number || !/^(\+234|234|0)[7-9]\d{9}$/.test(form.whatsapp_number.replace(/[\s\-\(\)]/g, ''))) {
+      setError('A valid Nigerian WhatsApp number is required (+234, 234, or 0 prefix).');
+      return;
+    }
+
+    setLoading(true); setError('');
+    try {
+      const res = await fetch('/api/players', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          full_name:          form.full_name,
+          email:              form.email,
+          password:           form.password,
+          whatsapp_number:    form.whatsapp_number.trim(),
+          chess_com_username: form.chess_com_username || undefined,
+          lichess_username:   form.lichess_username   || undefined,
+          year_started_chess: form.year_started_chess ? Number(form.year_started_chess) : undefined,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) { setError(data.error ?? 'Registration failed.'); setLoading(false); return; }
+      setResult(data);
+      localStorage.setItem('player_id', data.player_id);
+      setStep(data.needs_calibration ? 'calibrating' : 'verify');
+    } catch (e: any) {
+      setError(e.message);
+    }
+    setLoading(false);
+  };
+
+  // Handle resending the confirmation email
+  const handleResend = async () => {
+    if (countdown > 0) return;
+    setLoading(true); setError('');
+
+    const { error: err } = await supabase.auth.resend({
+      type: 'signup',
+      email: form.email,
+      options: {
+        emailRedirectTo: `${window.location.origin}/auth/callback`
+      }
+    });
+
+    setLoading(false);
+
+    if (err) {
+      if (err.status === 429) {
+        setError('Please wait a minute before requesting another link.');
+        setCountdown(60);
+      } else {
+        setError(err.message);
+      }
+      return;
+    }
+
+    setCountdown(60); // Start the 60-second cooldown
+  };
+
+  // Determine if registration is actually open for new sign-ups
+  const canRegister = seasonStatus?.state === 'open' || seasonStatus?.state === 'always_open';
+
+  // ── Check your email (Skipping Calibration) ─────────────────────────────────
+  if (step === 'verify') return (
+    <div className="min-h-screen flex items-center justify-center px-4">
+      <div className="card p-8 w-full max-w-md text-center space-y-6">
+        <div className="text-5xl">📧</div>
+        <h1 className="font-display text-2xl font-bold text-chalk">Check Your Email</h1>
+        <p className="text-ink-300 text-sm">
+          We sent a confirmation link to <strong className="text-gold">{form.email}</strong>.
+          Click it to verify your account, then sign in.
+        </p>
+        
+        {error && <p className="text-red-400 text-xs bg-red-900/20 border border-red-800 rounded-lg px-3 py-2 text-left">{error}</p>}
+
+        {result?.seed_rating && (
+          <div className="card p-4 text-left space-y-2 text-sm">
+            <div className="flex justify-between"><span className="text-ink-400">Seed Rating</span><span className="font-mono font-bold text-gold">{result.seed_rating}</span></div>
+            <div className="flex justify-between"><span className="text-ink-400">Source</span><span className="text-ink-300 capitalize">{result.seed_source?.replace(/_/g, ' ')}</span></div>
+          </div>
+        )}
+        
+        <div className="space-y-3 pt-2">
+          <button 
+            onClick={handleResend} 
+            disabled={loading || countdown > 0} 
+            className="btn-ghost w-full disabled:opacity-50"
+          >
+            {loading ? 'Sending...' : countdown > 0 ? `Resend in ${countdown}s` : 'Resend Confirmation Email'}
+          </button>
+          
+          <button onClick={() => router.push('/auth/login')} className="btn-gold w-full">
+            Go to Sign In
+          </button>
+        </div>
+        
+        <p className="text-xs text-ink-500">
+          Didn't receive it? Check spam, or{' '}
+          <button onClick={() => setStep('form')} className="text-gold hover:underline">try a different email</button>.
+        </p>
+      </div>
+    </div>
+  );
+
+  // ── Calibration required ────────────────────────────────────────────────────
+  if (step === 'calibrating') return (
+    <div className="min-h-screen flex items-center justify-center px-4">
+      <div className="card p-8 w-full max-w-md text-center space-y-6">
+        <div className="text-5xl">📧</div>
+        <h1 className="font-display text-2xl font-bold text-chalk">Verify Your Email</h1>
+        <p className="text-ink-300 text-sm">
+          We sent a confirmation link to <strong className="text-gold">{form.email}</strong>.
+        </p>
+        
+        {error && <p className="text-red-400 text-xs bg-red-900/20 border border-red-800 rounded-lg px-3 py-2 text-left">{error}</p>}
+
+        <div className="card p-4 text-left space-y-2 text-sm text-ink-300">
+          <div className="flex items-start gap-2"><span className="text-gold font-bold">1.</span> <span>Click the confirmation link in your email</span></div>
+          <div className="flex items-start gap-2"><span className="text-gold font-bold">2.</span> <span>Sign in to your new account</span></div>
+          <div className="flex items-start gap-2"><span className="text-gold font-bold">3.</span> <span>Complete 5 bot calibration games to set your rating</span></div>
+        </div>
+        
+        <p className="text-ink-500 text-xs">
+          Because no Chess.com or Lichess account was found, you must calibrate your rating before entering the draft.
+        </p>
+
+        <div className="space-y-3 pt-2">
+          <button 
+            onClick={handleResend} 
+            disabled={loading || countdown > 0} 
+            className="btn-ghost w-full disabled:opacity-50"
+          >
+            {loading ? 'Sending...' : countdown > 0 ? `Resend in ${countdown}s` : 'Resend Confirmation Email'}
+          </button>
+          
+          <button onClick={() => router.push('/auth/login')} className="btn-gold w-full">
+            Go to Sign In &rarr;
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+
+  // ── Registration closed / upcoming — show info page ─────────────────────────
+  if (seasonStatus && !canRegister) {
+    return (
+      <div className="min-h-screen flex items-center justify-center px-4">
+        <div className="card p-8 w-full max-w-md text-center space-y-6">
+          <div className="text-4xl mb-3">♟</div>
+          <h1 className="font-display text-2xl font-bold text-chalk">
+            {seasonStatus.season_name ?? 'SS4 Chess League'}
+          </h1>
+          
+          <div className="space-y-4">
+            {seasonStatus.state === 'upcoming' && (
+              <>
+                <div className="text-4xl">📅</div>
+                <p className="text-ink-300 text-sm">
+                  Registration hasn't opened yet.
+                </p>
+                <div className="card p-4 bg-blue-900/20 border border-blue-700/50 text-sm text-blue-300">
+                  {seasonStatus.message}
+                </div>
+              </>
+            )}
+            
+            {seasonStatus.state === 'closed' && (
+              <>
+                <div className="text-4xl">🔒</div>
+                <p className="text-ink-300 text-sm">
+                  Registration is currently closed.
+                </p>
+                <div className="card p-4 bg-red-900/20 border border-red-700/50 text-sm text-red-300">
+                  {seasonStatus.message}
+                </div>
+              </>
+            )}
+          </div>
+
+          <p className="text-xs text-ink-500 pt-2">
+            Already registered?{' '}
+            <a href="/auth/login" className="text-gold hover:underline">Sign in</a>
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Registration form ───────────────────────────────────────────────────────
+  return (
+    <div className="min-h-screen flex items-center justify-center px-4 py-12">
+      <div className="card p-8 w-full max-w-md space-y-6">
+        <div className="text-center">
+          <div className="text-4xl mb-3">♟</div>
+          <h1 className="font-display text-2xl font-bold text-chalk">Create Account</h1>
+          
+          {/* Season status display */}
+          {seasonStatus && (
+            <div className="mt-2">
+              <p className="text-ink-400 text-sm">
+                {seasonStatus.season_name ?? 'SS4 Chess League'}
+              </p>
+              {seasonStatus.state === 'open' && seasonStatus.registration_end && (
+                <p className="text-xs text-amber-400/80 mt-0.5">
+                  ⏳ {seasonStatus.message}
+                </p>
+              )}
+              {seasonStatus.state === 'always_open' && (
+                <p className="text-xs text-green-400/80 mt-0.5">
+                  ✅ Registration is open!
+                </p>
+              )}
+            </div>
+          )}
+          {!seasonStatus && (
+            <p className="text-ink-400 text-sm mt-1">SS4 Chess League</p>
+          )}
+        </div>
+
+        <div className="space-y-4">
+          {/* Required fields */}
+          <div>
+            <label className="section-label block mb-1.5">Full Name *</label>
+            <input className="input" placeholder="Your full name" value={form.full_name} onChange={set('full_name')} />
+          </div>
+          <div>
+            <label className="section-label block mb-1.5">Email Address *</label>
+            <input className="input" type="email" placeholder="your@email.com" value={form.email} onChange={set('email')} />
+          </div>
+          <div>
+            <label className="section-label block mb-1.5">
+              WhatsApp Number *
+              <span className="text-ink-500 normal-case"> (+234 format)</span>
+            </label>
+            <input className="input" placeholder="+234 812 345 6789" value={form.whatsapp_number} onChange={set('whatsapp_number')} />
+            {form.whatsapp_number && !/^(\+234|234|0)[7-9]\d{9}$/.test(form.whatsapp_number.replace(/[\s\-\(\)]/g, '')) && (
+              <p className="text-red-400 text-xs mt-1">Enter a valid Nigerian number (+234, 234, or 0 prefix)</p>
+            )}
+          </div>
+          <div>
+            <label className="section-label block mb-1.5">Password *</label>
+            <input className="input" type="password" placeholder="Min. 8 characters" value={form.password} onChange={set('password')} />
+          </div>
+          <div>
+            <label className="section-label block mb-1.5">Confirm Password *</label>
+            <input className="input" type="password" placeholder="Repeat password" value={form.confirm_password} onChange={set('confirm_password')}
+              onKeyDown={e => e.key === 'Enter' && handleSubmit()} />
+          </div>
+
+          {/* Optional fields */}
+          <div className="border-t border-ink-700 pt-4">
+            <p className="text-xs text-ink-400 mb-3">Optional - helps us seed your rating automatically</p>
+            <div className="space-y-3">
+              <div>
+                <label className="section-label block mb-1.5">Chess.com Username <span className="text-ink-500 normal-case">(for rating seed)</span></label>
+                <input className="input" placeholder="username" value={form.chess_com_username} onChange={set('chess_com_username')} />
+              </div>
+              <div>
+                <label className="section-label block mb-1.5">Lichess Username <span className="text-ink-500 normal-case">(alternative)</span></label>
+                <input className="input" placeholder="username" value={form.lichess_username} onChange={set('lichess_username')} />
+              </div>
+              <div>
+                <label className="section-label block mb-1.5">Year You Started Playing Chess</label>
+                <input className="input" type="number" placeholder="e.g. 2020" min="1900" max="2030" value={form.year_started_chess} onChange={set('year_started_chess')} />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* Rating seed explainer */}
+        <div className="card p-3 text-xs text-ink-400 space-y-0.5 bg-ink-900">
+          <div className="text-chalk font-medium mb-1">How rating seeding works</div>
+          <div>• Chess.com / Lichess rapid rating → instant seed, skip calibration</div>
+          <div>• No platform account → 5 bot calibration games after registration</div>
+          <div>• All ratings shown as <span className="font-mono text-gold">1234?</span> until 5 SS4 league games played</div>
+        </div>
+
+        {error && (
+          <p className="text-red-400 text-sm bg-red-900/20 border border-red-800 rounded-lg px-3 py-2">{error}</p>
+        )}
+
+        <button onClick={handleSubmit} disabled={loading} className="btn-gold w-full disabled:opacity-50">
+          {loading ? 'Creating account...' : 'Create Account'}
+        </button>
+
+        <p className="text-center text-xs text-ink-500">
+          Already registered?{' '}
+          <a href="/auth/login" className="text-gold hover:underline">Sign in</a>
+        </p>
+      </div>
     </div>
   );
 }
