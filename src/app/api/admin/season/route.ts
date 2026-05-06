@@ -11,8 +11,7 @@ const adminSupabase = () =>
 const TRANSITIONS: Record<string, string> = {
   registration:      'draft',
   draft:             'active',
-  active:            'playoffs',
-  playoffs:          'champions_league',
+  active:            'champions_league',
   champions_league:  'complete',
 };
  

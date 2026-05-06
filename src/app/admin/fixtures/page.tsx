@@ -27,24 +27,32 @@ export default function AdminFixturesPage() {
   }, []);
 
   async function fetchCurrentSeason() {
-    try {
-      const res = await fetch('/api/admin/season?action=current');
-      const data = await res.json();
-      if (data.season?.id) setSeason(data.season.id);
-    } catch {}
-  }
+      try {
+        const res = await fetch('/api/admin/season?action=current', {
+          headers: {
+            'x-admin-secret': 'ss4-admin-2026-abc',
+          },
+        });
+        const data = await res.json();
+        if (data.season?.id) setSeason(data.season.id);
+      } catch {}
+    }
 
   async function fetchLeagues() {
-    try {
-      const res = await fetch('/api/admin/leagues');
-      const data = await res.json();
-      setLeagues(data.leagues ?? []);
-    } catch (e: any) {
-      setError(e.message);
-    } finally {
-      setLoading(false);
+      try {
+        const res = await fetch('/api/admin/leagues', {
+          headers: {
+            'x-admin-secret': 'ss4-admin-2026-abc',
+          },
+        });
+        const data = await res.json();
+        setLeagues(data.leagues ?? []);
+      } catch (e: any) {
+        setError(e.message);
+      } finally {
+        setLoading(false);
+      }
     }
-  }
 
   async function generateLeagueFixtures(league: string) {
     if (!startDate) {

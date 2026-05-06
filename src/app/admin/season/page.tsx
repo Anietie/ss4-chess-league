@@ -35,16 +35,20 @@ export default function AdminSeasonPage() {
   }, []);
 
   async function fetchSeason() {
-    try {
-      const res = await fetch('/api/admin/season?action=current');
-      const data = await res.json();
-      setSeason(data.season);
-    } catch (e: any) {
-      setError(e.message);
-    } finally {
-      setLoading(false);
+      try {
+        const res = await fetch('/api/admin/season?action=current', {
+          headers: {
+            'x-admin-secret': 'ss4-admin-2026-abc',
+          },
+        });
+        const data = await res.json();
+        setSeason(data.season);
+      } catch (e: any) {
+        setError(e.message);
+      } finally {
+        setLoading(false);
+      }
     }
-  }
 
   async function advanceStatus() {
     if (!confirm(`Advance season from "${season?.status}" to the next stage?`)) return;

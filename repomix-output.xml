@@ -65,22 +65,23 @@ scripts/seed-season1.ts
 scripts/whatsapp-announce.ts
 server/socket-server.js
 server/stockfish-analysis.js
-src/app/admin/anti-cheat/flagged-games/route.ts
 src/app/admin/anti-cheat/page.tsx
-src/app/admin/anti-cheat/pending-violations/route.ts
-src/app/admin/anti-cheat/resolve/route.ts
 src/app/admin/draft/page.tsx
 src/app/admin/fixtures/page.tsx
 src/app/admin/layout.tsx
 src/app/admin/leagues/route.ts
 src/app/admin/page.tsx
-src/app/admin/players/[id]/route.ts
 src/app/admin/players/page.tsx
-src/app/admin/players/reactivate-all/route.ts
 src/app/admin/season/page.tsx
-src/app/admin/stats/route.ts
+src/app/api/admin/anti-cheat/flagged-games/route.ts
+src/app/api/admin/anti-cheat/pending-violations/route.ts
+src/app/api/admin/anti-cheat/resolve/route.ts
+src/app/api/admin/league/route.ts
+src/app/api/admin/players/[id]/route.ts
+src/app/api/admin/players/reactivate-all/route.ts
 src/app/api/admin/season-end/route.ts
 src/app/api/admin/season/route.ts
+src/app/api/admin/stats/route.ts
 src/app/api/admin/tier-enforcer/route.ts
 src/app/api/auth/callback/route.ts
 src/app/api/calibration/route.ts
@@ -169,308 +170,6 @@ vercel.json
 
 <files>
 This section contains the contents of the repository's files.
-
-<file path="src/app/admin/season/page.tsx">
-'use client';
-
-import { Loader2, CheckCircle, ArrowRight, Trophy, Users } from 'lucide-react';
-import { useEffect, useState } from 'react';
-
-interface SeasonInfo {
-  id: number;
-  name: string;
-  status: string;
-  start_date: string;
-  end_date: string | null;
-}
-
-const STATUS_FLOW = [
-  { status: 'registration', label: 'Registration', icon: '📝' },
-  { status: 'draft', label: 'Draft', icon: '🎯' },
-  { status: 'active', label: 'Active (League + SCEL)', icon: '⚔️' },
-  { status: 'champions_league', label: 'Champions League', icon: '👑' },
-  { status: 'complete', label: 'Complete', icon: '🏆' },
-];
-
-export default function AdminSeasonPage() {
-  const [season, setSeason] = useState<SeasonInfo | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [advancing, setAdvancing] = useState(false);
-  const [endingLeague, setEndingLeague] = useState(false);
-  const [clAction, setClAction] = useState('');
-  const [clWinnerId, setClWinnerId] = useState('');
-  const [clRunnerUpId, setClRunnerUpId] = useState('');
-  const [error, setError] = useState('');
-  const [success, setSuccess] = useState('');
-
-  useEffect(() => {
-    fetchSeason();
-  }, []);
-
-  async function fetchSeason() {
-    try {
-      const res = await fetch('/api/admin/season?action=current');
-      const data = await res.json();
-      setSeason(data.season);
-    } catch (e: any) {
-      setError(e.message);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function advanceStatus() {
-    if (!confirm(`Advance season from "${season?.status}" to the next stage?`)) return;
-    setAdvancing(true);
-    setError('');
-    try {
-      const res = await fetch('/api/admin/season', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-admin-secret': 'ss4-admin-2026-abc',
-        },
-        body: JSON.stringify({ action: 'advance_status', season: season?.id }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
-      setSuccess(`Season advanced: ${data.previous_status} → ${data.new_status}`);
-      fetchSeason();
-    } catch (e: any) {
-      setError(e.message);
-    } finally {
-      setAdvancing(false);
-    }
-  }
-
-  async function endLeaguePhase() {
-    if (!confirm('End the league phase? This will calculate final positions and determine Champions League qualifiers.')) return;
-    setEndingLeague(true);
-    setError('');
-    try {
-      const res = await fetch('/api/admin/season-end', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-admin-secret': 'ss4-admin-2026-abc',
-        },
-        body: JSON.stringify({ season: season?.id }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
-      setSuccess(`League phase ended. ${data.cup_qualifiers} Champions League qualifiers.`);
-      fetchSeason();
-    } catch (e: any) {
-      setError(e.message);
-    } finally {
-      setEndingLeague(false);
-    }
-  }
-
-  async function clActionHandler(action: string) {
-    setClAction(action);
-    setError('');
-    try {
-      const body: any = { action, season: season?.id };
-      if (action === 'finalize') {
-        body.cl_winner_id = clWinnerId;
-        body.cl_runner_up_id = clRunnerUpId || null;
-      }
-      const res = await fetch('/api/champions-league', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-admin-secret': 'ss4-admin-2026-abc',
-        },
-        body: JSON.stringify(body),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
-      setSuccess(`${action}: ${data.success ? 'Done!' : JSON.stringify(data)}`);
-      fetchSeason();
-    } catch (e: any) {
-      setError(e.message);
-    } finally {
-      setClAction('');
-    }
-  }
-
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <Loader2 className="animate-spin text-gold" size={28} />
-      </div>
-    );
-  }
-
-  const currentStatusIdx = STATUS_FLOW.findIndex(s => s.status === season?.status);
-
-  return (
-    <div className="space-y-8 page-enter">
-      <div>
-        <h1 className="font-display text-2xl font-bold text-chalk">Season Controls</h1>
-        <p className="text-ink-400 text-sm mt-1">Manage the season lifecycle</p>
-      </div>
-
-      {/* Error / Success */}
-      {error && (
-        <div className="card p-4 bg-red-900/20 border-red-700/50 text-red-300 text-sm">{error}</div>
-      )}
-      {success && (
-        <div className="card p-4 bg-green-900/20 border-green-700/50 text-green-300 text-sm flex items-center gap-2">
-          <CheckCircle size={14} /> {success}
-        </div>
-      )}
-
-      {/* Status flow */}
-      <div className="card p-5">
-        <div className="text-sm font-semibold text-chalk mb-4">Season Progress</div>
-        <div className="flex items-center gap-2 flex-wrap">
-          {STATUS_FLOW.map((s, i) => (
-            <div key={s.status} className="flex items-center gap-2">
-              <div className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm border ${
-                i === currentStatusIdx
-                  ? 'bg-gold/10 border-gold/30 text-gold'
-                  : i < currentStatusIdx
-                  ? 'bg-green-900/20 border-green-700/50 text-green-300'
-                  : 'bg-ink-800 border-ink-700 text-ink-400'
-              }`}>
-                <span>{s.icon}</span>
-                <span>{s.label}</span>
-              </div>
-              {i < STATUS_FLOW.length - 1 && (
-                <ArrowRight size={14} className="text-ink-600 flex-shrink-0" />
-              )}
-            </div>
-          ))}
-        </div>
-      </div>
-
-      {/* Current season info */}
-      {season && (
-        <div className="card p-5">
-          <div className="text-sm font-semibold text-chalk mb-3">Current Season</div>
-          <div className="grid grid-cols-2 gap-4 text-sm">
-            <div>
-              <span className="text-ink-400">Name:</span>{' '}
-              <span className="text-chalk">{season.name}</span>
-            </div>
-            <div>
-              <span className="text-ink-400">Status:</span>{' '}
-              <span className="text-chalk capitalize">{season.status.replace(/_/g, ' ')}</span>
-            </div>
-            <div>
-              <span className="text-ink-400">Start:</span>{' '}
-              <span className="text-chalk">{season.start_date}</span>
-            </div>
-            <div>
-              <span className="text-ink-400">End:</span>{' '}
-              <span className="text-chalk">{season.end_date ?? 'TBD'}</span>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Actions */}
-      <div className="space-y-4">
-        {/* Advance status */}
-        <div className="card p-5">
-          <div className="flex items-center justify-between">
-            <div>
-              <div className="text-sm text-chalk font-medium">Advance Season Status</div>
-              <div className="text-xs text-ink-400 mt-0.5">
-                Moves to the next stage: {STATUS_FLOW[currentStatusIdx + 1]?.label ?? 'Complete'}
-              </div>
-            </div>
-            <button
-              onClick={advanceStatus}
-              disabled={advancing || !season || season.status === 'complete'}
-              className="btn-gold gap-2"
-            >
-              {advancing ? <Loader2 size={14} className="animate-spin" /> : <ArrowRight size={14} />}
-              Advance
-            </button>
-          </div>
-        </div>
-
-        {/* End league phase */}
-        <div className="card p-5">
-          <div className="flex items-center justify-between">
-            <div>
-              <div className="text-sm text-chalk font-medium">End League Phase</div>
-              <div className="text-xs text-ink-400 mt-0.5">
-                Calculates final positions, determines CL qualifiers, and advances to Champions League stage.
-              </div>
-            </div>
-            <button
-              onClick={endLeaguePhase}
-              disabled={endingLeague || season?.status !== 'active'}
-              className="btn-gold gap-2"
-            >
-              {endingLeague ? <Loader2 size={14} className="animate-spin" /> : <Trophy size={14} />}
-              End League Phase
-            </button>
-          </div>
-        </div>
-
-        {/* Champions League */}
-        <div className="card p-5 space-y-4">
-          <div>
-            <div className="text-sm text-chalk font-medium">Champions League Management</div>
-            <div className="text-xs text-ink-400 mt-0.5">
-              Only available when season is in champions_league status.
-            </div>
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-            <button
-              onClick={() => clActionHandler('draw_groups')}
-              disabled={clAction !== '' || season?.status !== 'champions_league'}
-              className="btn-ghost gap-2 justify-center"
-            >
-              {clAction === 'draw_groups' ? <Loader2 size={14} className="animate-spin" /> : <Users size={14} />}
-              Draw Groups
-            </button>
-            <button
-              onClick={() => clActionHandler('generate_knockout')}
-              disabled={clAction !== '' || season?.status !== 'champions_league'}
-              className="btn-ghost gap-2 justify-center"
-            >
-              {clAction === 'generate_knockout' ? <Loader2 size={14} className="animate-spin" /> : <Trophy size={14} />}
-              Generate Knockout
-            </button>
-            <button
-              onClick={() => clActionHandler('finalize')}
-              disabled={clAction !== '' || season?.status !== 'champions_league' || !clWinnerId}
-              className="btn-ghost gap-2 justify-center"
-            >
-              {clAction === 'finalize' ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle size={14} />}
-              Finalize
-            </button>
-          </div>
-          {(season?.status === 'champions_league') && (
-            <div className="grid grid-cols-2 gap-3 pt-2">
-              <input
-                type="text"
-                placeholder="CL Winner Player ID"
-                value={clWinnerId}
-                onChange={e => setClWinnerId(e.target.value)}
-                className="input"
-              />
-              <input
-                type="text"
-                placeholder="CL Runner-Up Player ID (optional)"
-                value={clRunnerUpId}
-                onChange={e => setClRunnerUpId(e.target.value)}
-                className="input"
-              />
-            </div>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-</file>
 
 <file path=".gitignore">
 .vercel
@@ -990,448 +689,6 @@ async function backupDb() {
   }
 }
 backupDb().catch(console.error);
-</file>
-
-<file path="src/app/admin/anti-cheat/flagged-games/route.ts">
-import { createClient } from '@supabase/supabase-js';
-import { NextRequest, NextResponse } from 'next/server';
-
-const adminSupabase = () =>
-  createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!
-  );
-
-export async function GET(req: NextRequest) {
-  if (req.headers.get('x-admin-secret') !== process.env.ADMIN_SECRET) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
-
-  const supabase = adminSupabase();
-
-  const { data: flaggedGames } = await supabase
-    .from('games')
-    .select(`
-      id, result, played_at, competition_phase, league,
-      white_anticheat_score, black_anticheat_score,
-      white_player:players!games_white_player_id_fkey(id, full_name),
-      black_player:players!games_black_player_id_fkey(id, full_name)
-    `)
-    .eq('anticheat_flagged', true)
-    .order('played_at', { ascending: false })
-    .limit(50);
-
-  return NextResponse.json({ flagged_games: flaggedGames ?? [] });
-}
-</file>
-
-<file path="src/app/admin/anti-cheat/page.tsx">
-'use client';
-
-import { Loader2, CheckCircle, AlertTriangle, Shield, Eye, XCircle } from 'lucide-react';
-import Link from 'next/link';
-import { useEffect, useState } from 'react';
-
-interface FlaggedGame {
-  id: string;
-  result: string;
-  played_at: string;
-  white_player: { id: string; full_name: string };
-  black_player: { id: string; full_name: string };
-  white_anticheat_score: number;
-  black_anticheat_score: number;
-  anticheat_flagged: boolean;
-  competition_phase: string;
-  league: string;
-}
-
-interface Violation {
-  id: string;
-  player_id: string;
-  game_id: string;
-  violation_type: string;
-  severity: string;
-  description: string;
-  resolved_at: string | null;
-  created_at: string;
-  player?: { id: string; full_name: string };
-}
-
-export default function AdminAntiCheatPage() {
-  const [flaggedGames, setFlaggedGames] = useState<FlaggedGame[]>([]);
-  const [pendingViolations, setPendingViolations] = useState<Violation[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
-  const [success, setSuccess] = useState('');
-  const [resolving, setResolving] = useState<string | null>(null);
-
-  useEffect(() => {
-    fetchData();
-  }, []);
-
-  async function fetchData() {
-    try {
-      const [gamesRes, violationsRes] = await Promise.all([
-        fetch('/api/admin/anti-cheat/flagged-games', {
-          headers: { 'x-admin-secret': 'ss4-admin-2026-abc' },
-        }),
-        fetch('/api/admin/anti-cheat/pending-violations', {
-          headers: { 'x-admin-secret': 'ss4-admin-2026-abc' },
-        }),
-      ]);
-      const games = await gamesRes.json();
-      const violations = await violationsRes.json();
-      setFlaggedGames(games.flagged_games ?? []);
-      setPendingViolations(violations.violations ?? []);
-    } catch (e: any) {
-      setError(e.message);
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function resolveViolation(violationId: string, resolution: 'dismissed' | 'confirmed', severity?: string) {
-    setResolving(violationId);
-    setError('');
-    try {
-      const res = await fetch('/api/admin/anti-cheat/resolve', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-admin-secret': 'ss4-admin-2026-abc',
-        },
-        body: JSON.stringify({ violation_id: violationId, resolution, severity }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
-      setSuccess(`Violation ${resolution}. ${data.action_taken ?? ''}`);
-      fetchData();
-    } catch (e: any) {
-      setError(e.message);
-    } finally {
-      setResolving(null);
-    }
-  }
-
-  function scoreColor(score: number): string {
-    if (score >= 90) return 'text-red-400';
-    if (score >= 75) return 'text-amber-400';
-    return 'text-green-400';
-  }
-
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <Loader2 className="animate-spin text-gold" size={28} />
-      </div>
-    );
-  }
-
-  return (
-    <div className="space-y-8 page-enter">
-      <div>
-        <h1 className="font-display text-2xl font-bold text-chalk">Anti-Cheat Review</h1>
-        <p className="text-ink-400 text-sm mt-1">Review flagged games and resolve violations</p>
-      </div>
-
-      {/* Error / Success */}
-      {error && (
-        <div className="card p-4 bg-red-900/20 border-red-700/50 text-red-300 text-sm">{error}</div>
-      )}
-      {success && (
-        <div className="card p-4 bg-green-900/20 border-green-700/50 text-green-300 text-sm flex items-center gap-2">
-          <CheckCircle size={14} /> {success}
-        </div>
-      )}
-
-      {/* Stats */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <div className="card p-4">
-          <div className="text-xs text-ink-400 mb-1">Flagged Games</div>
-          <div className="text-2xl font-bold text-amber-400">{flaggedGames.length}</div>
-        </div>
-        <div className="card p-4">
-          <div className="text-xs text-ink-400 mb-1">Pending Reviews</div>
-          <div className="text-2xl font-bold text-red-400">{pendingViolations.length}</div>
-        </div>
-      </div>
-
-      {/* Pending violations */}
-      {pendingViolations.length > 0 && (
-        <div>
-          <h2 className="font-display text-lg font-bold text-chalk mb-3 flex items-center gap-2">
-            <AlertTriangle size={16} className="text-red-400" />
-            Pending Violations
-          </h2>
-          <div className="space-y-3">
-            {pendingViolations.map(v => (
-              <div key={v.id} className="card p-5 space-y-3">
-                <div className="flex items-start justify-between">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm font-semibold text-chalk">
-                        {v.player?.full_name ?? v.player_id}
-                      </span>
-                      <span className={`text-xs px-2 py-0.5 rounded-full ${
-                        v.severity === 'game_forfeit' 
-                          ? 'bg-red-900/30 text-red-300' 
-                          : 'bg-amber-900/30 text-amber-300'
-                      }`}>
-                        {v.severity.replace(/_/g, ' ')}
-                      </span>
-                    </div>
-                    <div className="text-xs text-ink-400 mt-1">{v.description}</div>
-                    <div className="text-xs text-ink-500 mt-1">
-                      {new Date(v.created_at).toLocaleDateString()} ·{' '}
-                      <Link href={`/game/${v.game_id}/review`} className="text-gold hover:underline">
-                        View Game
-                      </Link>
-                    </div>
-                  </div>
-                </div>
-                <div className="flex gap-2">
-                  <button
-                    onClick={() => resolveViolation(v.id, 'confirmed', 'game_forfeit')}
-                    disabled={resolving === v.id}
-                    className="btn-danger btn-sm gap-1.5"
-                  >
-                    <XCircle size={12} />
-                    Confirm & Forfeit Game
-                  </button>
-                  <button
-                    onClick={() => resolveViolation(v.id, 'confirmed', 'suspension')}
-                    disabled={resolving === v.id}
-                    className="btn-danger btn-sm gap-1.5"
-                  >
-                    <Shield size={12} />
-                    Confirm & Suspend Player
-                  </button>
-                  <button
-                    onClick={() => resolveViolation(v.id, 'confirmed', 'ban')}
-                    disabled={resolving === v.id}
-                    className="btn-danger btn-sm gap-1.5"
-                  >
-                    <Shield size={12} />
-                    Confirm & Ban
-                  </button>
-                  <button
-                    onClick={() => resolveViolation(v.id, 'dismissed')}
-                    disabled={resolving === v.id}
-                    className="btn-ghost btn-sm gap-1.5 ml-auto"
-                  >
-                    <CheckCircle size={12} />
-                    Dismiss (False Flag)
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Flagged games */}
-      <div>
-        <h2 className="font-display text-lg font-bold text-chalk mb-3 flex items-center gap-2">
-          <Eye size={16} className="text-amber-400" />
-          Flagged Games
-        </h2>
-        {flaggedGames.length === 0 ? (
-          <div className="card p-8 text-center text-ink-400 text-sm">
-            <Shield size={32} className="mx-auto mb-3 text-green-400" />
-            No flagged games. All clear.
-          </div>
-        ) : (
-          <div className="card overflow-hidden">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-xs text-ink-400 border-b border-ink-700 bg-ink-900">
-                  <th className="px-4 py-3 text-left">Game</th>
-                  <th className="px-4 py-3 text-center">Result</th>
-                  <th className="px-4 py-3 text-center">White Score</th>
-                  <th className="px-4 py-3 text-center">Black Score</th>
-                  <th className="px-4 py-3 text-center">Date</th>
-                  <th className="px-4 py-3 text-right">Review</th>
-                </tr>
-              </thead>
-              <tbody>
-                {flaggedGames.map(g => (
-                  <tr key={g.id} className="border-b border-ink-700/50 hover:bg-ink-800/50">
-                    <td className="px-4 py-3">
-                      <span className="text-chalk">{g.white_player?.full_name}</span>
-                      <span className="text-ink-500 mx-1.5">vs</span>
-                      <span className="text-chalk">{g.black_player?.full_name}</span>
-                    </td>
-                    <td className="px-4 py-3 text-center font-mono text-gold">{g.result}</td>
-                    <td className={`px-4 py-3 text-center font-mono font-bold ${scoreColor(g.white_anticheat_score)}`}>
-                      {g.white_anticheat_score}%
-                    </td>
-                    <td className={`px-4 py-3 text-center font-mono font-bold ${scoreColor(g.black_anticheat_score)}`}>
-                      {g.black_anticheat_score}%
-                    </td>
-                    <td className="px-4 py-3 text-center text-ink-500 text-xs">
-                      {g.played_at ? new Date(g.played_at).toLocaleDateString() : '—'}
-                    </td>
-                    <td className="px-4 py-3 text-right">
-                      <Link
-                        href={`/game/${g.id}/review`}
-                        className="text-xs text-gold hover:underline"
-                      >
-                        Review Game →
-                      </Link>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-</file>
-
-<file path="src/app/admin/anti-cheat/pending-violations/route.ts">
-import { createClient } from '@supabase/supabase-js';
-import { NextRequest, NextResponse } from 'next/server';
-
-const adminSupabase = () =>
-  createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!
-  );
-
-export async function GET(req: NextRequest) {
-  if (req.headers.get('x-admin-secret') !== process.env.ADMIN_SECRET) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
-
-  const supabase = adminSupabase();
-
-  const { data: violations } = await supabase
-    .from('conduct_violations')
-    .select(`
-      id, player_id, game_id, violation_type, severity, description,
-      resolved_at, created_at,
-      player:players(id, full_name)
-    `)
-    .is('resolved_at', null)
-    .order('created_at', { ascending: false });
-
-  return NextResponse.json({ violations: violations ?? [] });
-}
-</file>
-
-<file path="src/app/admin/anti-cheat/resolve/route.ts">
-import { createClient } from '@supabase/supabase-js';
-import { NextRequest, NextResponse } from 'next/server';
-
-const adminSupabase = () =>
-  createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!
-  );
-
-export async function POST(req: NextRequest) {
-  if (req.headers.get('x-admin-secret') !== process.env.ADMIN_SECRET) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
-
-  const { violation_id, resolution, severity } = await req.json();
-  const supabase = adminSupabase();
-
-  // Fetch the violation
-  const { data: violation } = await supabase
-    .from('conduct_violations')
-    .select('*')
-    .eq('id', violation_id)
-    .single();
-
-  if (!violation) {
-    return NextResponse.json({ error: 'Violation not found' }, { status: 404 });
-  }
-
-  const updates: any = {
-    resolved_at: new Date().toISOString(),
-    reviewed_by: 'admin',
-  };
-
-  if (resolution === 'confirmed') {
-    updates.violation_type = 'cheating_confirmed';
-    if (severity) updates.severity = severity;
-
-    // Handle player sanctions
-    if (severity === 'game_forfeit' && violation.game_id) {
-      // Overturn the game result to forfeit for the cheater
-      const { data: game } = await supabase
-        .from('games')
-        .select('white_player_id, black_player_id')
-        .eq('id', violation.game_id)
-        .single();
-
-      if (game) {
-        const forfeitResult = game.white_player_id === violation.player_id ? '0-1' : '1-0';
-        await supabase.from('games').update({
-          result: forfeitResult,
-          anticheat_flagged: false,
-        }).eq('id', violation.game_id);
-      }
-    }
-
-    if (severity === 'suspension') {
-      await supabase.from('players').update({
-        is_suspended: true,
-        suspension_reason: `Cheating confirmed — ${violation.description}`,
-      }).eq('id', violation.player_id);
-    }
-
-    if (severity === 'ban') {
-      await supabase.from('players').update({
-        is_suspended: true,
-        is_active: false,
-        suspension_reason: `Banned — cheating confirmed`,
-      }).eq('id', violation.player_id);
-    }
-
-    // Notify the player
-    await supabase.from('notifications').insert({
-      player_id: violation.player_id,
-      type: 'admin_action',
-      title: severity === 'ban' ? 'Account Banned' : severity === 'suspension' ? 'Account Suspended' : 'Game Forfeited',
-      message: severity === 'dismissed'
-        ? 'The flagged game review has been dismissed. No action taken.'
-        : `A League Officer has reviewed your game and confirmed a conduct violation. Sanction: ${severity?.replace(/_/g, ' ')}.`,
-    });
-
-  } else {
-    // Dismissed
-    updates.violation_type = 'cheating_flag';
-    updates.severity = 'warning';
-
-    // Clear the anticheat flag on the game
-    if (violation.game_id) {
-      await supabase.from('games').update({ anticheat_flagged: false }).eq('id', violation.game_id);
-    }
-
-    await supabase.from('notifications').insert({
-      player_id: violation.player_id,
-      type: 'admin_action',
-      title: 'Game Review Dismissed',
-      message: 'A League Officer has reviewed your flagged game and determined no violation occurred. The flag has been cleared.',
-    });
-  }
-
-  await supabase.from('conduct_violations').update(updates).eq('id', violation_id);
-
-  return NextResponse.json({
-    success: true,
-    resolution,
-    severity: severity ?? violation.severity,
-    action_taken: resolution === 'confirmed'
-      ? `Player sanctioned: ${severity ?? violation.severity}`
-      : 'Flag dismissed, no action taken',
-  });
-}
 </file>
 
 <file path="src/app/admin/draft/page.tsx">
@@ -2137,38 +1394,6 @@ export async function GET(req: NextRequest) {
 }
 </file>
 
-<file path="src/app/admin/players/[id]/route.ts">
-import { createClient } from '@supabase/supabase-js';
-import { NextRequest, NextResponse } from 'next/server';
-
-const adminSupabase = () =>
-  createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!
-  );
-
-export async function PATCH(
-  req: NextRequest,
-  { params }: { params: Promise<{ id: string }> }
-) {
-  if (req.headers.get('x-admin-secret') !== process.env.ADMIN_SECRET) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
-
-  const { id } = await params;
-  const { is_active } = await req.json();
-  const supabase = adminSupabase();
-
-  const { error } = await supabase
-    .from('players')
-    .update({ is_active })
-    .eq('id', id);
-
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json({ success: true });
-}
-</file>
-
 <file path="src/app/admin/players/page.tsx">
 'use client';
 
@@ -2402,7 +1627,570 @@ export default function AdminPlayersPage() {
 }
 </file>
 
-<file path="src/app/admin/players/reactivate-all/route.ts">
+<file path="src/app/admin/season/page.tsx">
+'use client';
+
+import { Loader2, CheckCircle, ArrowRight, Trophy, Users } from 'lucide-react';
+import { useEffect, useState } from 'react';
+
+interface SeasonInfo {
+  id: number;
+  name: string;
+  status: string;
+  start_date: string;
+  end_date: string | null;
+}
+
+const STATUS_FLOW = [
+  { status: 'registration', label: 'Registration', icon: '📝' },
+  { status: 'draft', label: 'Draft', icon: '🎯' },
+  { status: 'active', label: 'Active (League + SCEL)', icon: '⚔️' },
+  { status: 'champions_league', label: 'Champions League', icon: '👑' },
+  { status: 'complete', label: 'Complete', icon: '🏆' },
+];
+
+export default function AdminSeasonPage() {
+  const [season, setSeason] = useState<SeasonInfo | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [advancing, setAdvancing] = useState(false);
+  const [endingLeague, setEndingLeague] = useState(false);
+  const [clAction, setClAction] = useState('');
+  const [clWinnerId, setClWinnerId] = useState('');
+  const [clRunnerUpId, setClRunnerUpId] = useState('');
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+
+  useEffect(() => {
+    fetchSeason();
+  }, []);
+
+  async function fetchSeason() {
+    try {
+      const res = await fetch('/api/admin/season?action=current');
+      const data = await res.json();
+      setSeason(data.season);
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function advanceStatus() {
+    if (!confirm(`Advance season from "${season?.status}" to the next stage?`)) return;
+    setAdvancing(true);
+    setError('');
+    try {
+      const res = await fetch('/api/admin/season', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-admin-secret': 'ss4-admin-2026-abc',
+        },
+        body: JSON.stringify({ action: 'advance_status', season: season?.id }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      setSuccess(`Season advanced: ${data.previous_status} → ${data.new_status}`);
+      fetchSeason();
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setAdvancing(false);
+    }
+  }
+
+  async function endLeaguePhase() {
+    if (!confirm('End the league phase? This will calculate final positions and determine Champions League qualifiers.')) return;
+    setEndingLeague(true);
+    setError('');
+    try {
+      const res = await fetch('/api/admin/season-end', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-admin-secret': 'ss4-admin-2026-abc',
+        },
+        body: JSON.stringify({ season: season?.id }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      setSuccess(`League phase ended. ${data.cup_qualifiers} Champions League qualifiers.`);
+      fetchSeason();
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setEndingLeague(false);
+    }
+  }
+
+  async function clActionHandler(action: string) {
+    setClAction(action);
+    setError('');
+    try {
+      const body: any = { action, season: season?.id };
+      if (action === 'finalize') {
+        body.cl_winner_id = clWinnerId;
+        body.cl_runner_up_id = clRunnerUpId || null;
+      }
+      const res = await fetch('/api/champions-league', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-admin-secret': 'ss4-admin-2026-abc',
+        },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      setSuccess(`${action}: ${data.success ? 'Done!' : JSON.stringify(data)}`);
+      fetchSeason();
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setClAction('');
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <Loader2 className="animate-spin text-gold" size={28} />
+      </div>
+    );
+  }
+
+  const currentStatusIdx = STATUS_FLOW.findIndex(s => s.status === season?.status);
+
+  return (
+    <div className="space-y-8 page-enter">
+      <div>
+        <h1 className="font-display text-2xl font-bold text-chalk">Season Controls</h1>
+        <p className="text-ink-400 text-sm mt-1">Manage the season lifecycle</p>
+      </div>
+
+      {/* Error / Success */}
+      {error && (
+        <div className="card p-4 bg-red-900/20 border-red-700/50 text-red-300 text-sm">{error}</div>
+      )}
+      {success && (
+        <div className="card p-4 bg-green-900/20 border-green-700/50 text-green-300 text-sm flex items-center gap-2">
+          <CheckCircle size={14} /> {success}
+        </div>
+      )}
+
+      {/* Status flow */}
+      <div className="card p-5">
+        <div className="text-sm font-semibold text-chalk mb-4">Season Progress</div>
+        <div className="flex items-center gap-2 flex-wrap">
+          {STATUS_FLOW.map((s, i) => (
+            <div key={s.status} className="flex items-center gap-2">
+              <div className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm border ${
+                i === currentStatusIdx
+                  ? 'bg-gold/10 border-gold/30 text-gold'
+                  : i < currentStatusIdx
+                  ? 'bg-green-900/20 border-green-700/50 text-green-300'
+                  : 'bg-ink-800 border-ink-700 text-ink-400'
+              }`}>
+                <span>{s.icon}</span>
+                <span>{s.label}</span>
+              </div>
+              {i < STATUS_FLOW.length - 1 && (
+                <ArrowRight size={14} className="text-ink-600 flex-shrink-0" />
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Current season info */}
+      {season && (
+        <div className="card p-5">
+          <div className="text-sm font-semibold text-chalk mb-3">Current Season</div>
+          <div className="grid grid-cols-2 gap-4 text-sm">
+            <div>
+              <span className="text-ink-400">Name:</span>{' '}
+              <span className="text-chalk">{season.name}</span>
+            </div>
+            <div>
+              <span className="text-ink-400">Status:</span>{' '}
+              <span className="text-chalk capitalize">{season.status.replace(/_/g, ' ')}</span>
+            </div>
+            <div>
+              <span className="text-ink-400">Start:</span>{' '}
+              <span className="text-chalk">{season.start_date}</span>
+            </div>
+            <div>
+              <span className="text-ink-400">End:</span>{' '}
+              <span className="text-chalk">{season.end_date ?? 'TBD'}</span>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Actions */}
+      <div className="space-y-4">
+        {/* Advance status */}
+        <div className="card p-5">
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-sm text-chalk font-medium">Advance Season Status</div>
+              <div className="text-xs text-ink-400 mt-0.5">
+                Moves to the next stage: {STATUS_FLOW[currentStatusIdx + 1]?.label ?? 'Complete'}
+              </div>
+            </div>
+            <button
+              onClick={advanceStatus}
+              disabled={advancing || !season || season.status === 'complete'}
+              className="btn-gold gap-2"
+            >
+              {advancing ? <Loader2 size={14} className="animate-spin" /> : <ArrowRight size={14} />}
+              Advance
+            </button>
+          </div>
+        </div>
+
+        {/* End league phase */}
+        <div className="card p-5">
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-sm text-chalk font-medium">End League Phase</div>
+              <div className="text-xs text-ink-400 mt-0.5">
+                Calculates final positions, determines CL qualifiers, and advances to Champions League stage.
+              </div>
+            </div>
+            <button
+              onClick={endLeaguePhase}
+              disabled={endingLeague || season?.status !== 'active'}
+              className="btn-gold gap-2"
+            >
+              {endingLeague ? <Loader2 size={14} className="animate-spin" /> : <Trophy size={14} />}
+              End League Phase
+            </button>
+          </div>
+        </div>
+
+        {/* Champions League */}
+        <div className="card p-5 space-y-4">
+          <div>
+            <div className="text-sm text-chalk font-medium">Champions League Management</div>
+            <div className="text-xs text-ink-400 mt-0.5">
+              Only available when season is in champions_league status.
+            </div>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <button
+              onClick={() => clActionHandler('draw_groups')}
+              disabled={clAction !== '' || season?.status !== 'champions_league'}
+              className="btn-ghost gap-2 justify-center"
+            >
+              {clAction === 'draw_groups' ? <Loader2 size={14} className="animate-spin" /> : <Users size={14} />}
+              Draw Groups
+            </button>
+            <button
+              onClick={() => clActionHandler('generate_knockout')}
+              disabled={clAction !== '' || season?.status !== 'champions_league'}
+              className="btn-ghost gap-2 justify-center"
+            >
+              {clAction === 'generate_knockout' ? <Loader2 size={14} className="animate-spin" /> : <Trophy size={14} />}
+              Generate Knockout
+            </button>
+            <button
+              onClick={() => clActionHandler('finalize')}
+              disabled={clAction !== '' || season?.status !== 'champions_league' || !clWinnerId}
+              className="btn-ghost gap-2 justify-center"
+            >
+              {clAction === 'finalize' ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle size={14} />}
+              Finalize
+            </button>
+          </div>
+          {(season?.status === 'champions_league') && (
+            <div className="grid grid-cols-2 gap-3 pt-2">
+              <input
+                type="text"
+                placeholder="CL Winner Player ID"
+                value={clWinnerId}
+                onChange={e => setClWinnerId(e.target.value)}
+                className="input"
+              />
+              <input
+                type="text"
+                placeholder="CL Runner-Up Player ID (optional)"
+                value={clRunnerUpId}
+                onChange={e => setClRunnerUpId(e.target.value)}
+                className="input"
+              />
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+</file>
+
+<file path="src/app/api/admin/anti-cheat/flagged-games/route.ts">
+import { createClient } from '@supabase/supabase-js';
+import { NextRequest, NextResponse } from 'next/server';
+
+const adminSupabase = () =>
+  createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!
+  );
+
+export async function GET(req: NextRequest) {
+  if (req.headers.get('x-admin-secret') !== process.env.ADMIN_SECRET) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  const supabase = adminSupabase();
+
+  const { data: flaggedGames } = await supabase
+    .from('games')
+    .select(`
+      id, result, played_at, competition_phase, league,
+      white_anticheat_score, black_anticheat_score,
+      white_player:players!games_white_player_id_fkey(id, full_name),
+      black_player:players!games_black_player_id_fkey(id, full_name)
+    `)
+    .eq('anticheat_flagged', true)
+    .order('played_at', { ascending: false })
+    .limit(50);
+
+  return NextResponse.json({ flagged_games: flaggedGames ?? [] });
+}
+</file>
+
+<file path="src/app/api/admin/anti-cheat/pending-violations/route.ts">
+import { createClient } from '@supabase/supabase-js';
+import { NextRequest, NextResponse } from 'next/server';
+
+const adminSupabase = () =>
+  createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!
+  );
+
+export async function GET(req: NextRequest) {
+  if (req.headers.get('x-admin-secret') !== process.env.ADMIN_SECRET) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  const supabase = adminSupabase();
+
+  const { data: violations } = await supabase
+    .from('conduct_violations')
+    .select(`
+      id, player_id, game_id, violation_type, severity, description,
+      resolved_at, created_at,
+      player:players(id, full_name)
+    `)
+    .is('resolved_at', null)
+    .order('created_at', { ascending: false });
+
+  return NextResponse.json({ violations: violations ?? [] });
+}
+</file>
+
+<file path="src/app/api/admin/anti-cheat/resolve/route.ts">
+import { createClient } from '@supabase/supabase-js';
+import { NextRequest, NextResponse } from 'next/server';
+
+const adminSupabase = () =>
+  createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!
+  );
+
+export async function POST(req: NextRequest) {
+  if (req.headers.get('x-admin-secret') !== process.env.ADMIN_SECRET) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  const { violation_id, resolution, severity } = await req.json();
+  const supabase = adminSupabase();
+
+  // Fetch the violation
+  const { data: violation } = await supabase
+    .from('conduct_violations')
+    .select('*')
+    .eq('id', violation_id)
+    .single();
+
+  if (!violation) {
+    return NextResponse.json({ error: 'Violation not found' }, { status: 404 });
+  }
+
+  const updates: any = {
+    resolved_at: new Date().toISOString(),
+    reviewed_by: 'admin',
+  };
+
+  if (resolution === 'confirmed') {
+    updates.violation_type = 'cheating_confirmed';
+    if (severity) updates.severity = severity;
+
+    // Handle player sanctions
+    if (severity === 'game_forfeit' && violation.game_id) {
+      // Overturn the game result to forfeit for the cheater
+      const { data: game } = await supabase
+        .from('games')
+        .select('white_player_id, black_player_id')
+        .eq('id', violation.game_id)
+        .single();
+
+      if (game) {
+        const forfeitResult = game.white_player_id === violation.player_id ? '0-1' : '1-0';
+        await supabase.from('games').update({
+          result: forfeitResult,
+          anticheat_flagged: false,
+        }).eq('id', violation.game_id);
+      }
+    }
+
+    if (severity === 'suspension') {
+      await supabase.from('players').update({
+        is_suspended: true,
+        suspension_reason: `Cheating confirmed — ${violation.description}`,
+      }).eq('id', violation.player_id);
+    }
+
+    if (severity === 'ban') {
+      await supabase.from('players').update({
+        is_suspended: true,
+        is_active: false,
+        suspension_reason: `Banned — cheating confirmed`,
+      }).eq('id', violation.player_id);
+    }
+
+    // Notify the player
+    await supabase.from('notifications').insert({
+      player_id: violation.player_id,
+      type: 'admin_action',
+      title: severity === 'ban' ? 'Account Banned' : severity === 'suspension' ? 'Account Suspended' : 'Game Forfeited',
+      message: severity === 'dismissed'
+        ? 'The flagged game review has been dismissed. No action taken.'
+        : `A League Officer has reviewed your game and confirmed a conduct violation. Sanction: ${severity?.replace(/_/g, ' ')}.`,
+    });
+
+  } else {
+    // Dismissed
+    updates.violation_type = 'cheating_flag';
+    updates.severity = 'warning';
+
+    // Clear the anticheat flag on the game
+    if (violation.game_id) {
+      await supabase.from('games').update({ anticheat_flagged: false }).eq('id', violation.game_id);
+    }
+
+    await supabase.from('notifications').insert({
+      player_id: violation.player_id,
+      type: 'admin_action',
+      title: 'Game Review Dismissed',
+      message: 'A League Officer has reviewed your flagged game and determined no violation occurred. The flag has been cleared.',
+    });
+  }
+
+  await supabase.from('conduct_violations').update(updates).eq('id', violation_id);
+
+  return NextResponse.json({
+    success: true,
+    resolution,
+    severity: severity ?? violation.severity,
+    action_taken: resolution === 'confirmed'
+      ? `Player sanctioned: ${severity ?? violation.severity}`
+      : 'Flag dismissed, no action taken',
+  });
+}
+</file>
+
+<file path="src/app/api/admin/league/route.ts">
+import { createClient } from '@supabase/supabase-js';
+import { NextRequest, NextResponse } from 'next/server';
+
+const adminSupabase = () =>
+  createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!
+  );
+
+export async function GET(req: NextRequest) {
+  if (req.headers.get('x-admin-secret') !== process.env.ADMIN_SECRET) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  const supabase = adminSupabase();
+  const season = new URL(req.url).searchParams.get('season') ?? '1';
+
+  // Get players grouped by league
+  const { data: players } = await supabase
+    .from('players')
+    .select('home_league')
+    .eq('is_active', true)
+    .neq('home_league', 'unassigned')
+    .neq('home_league', 'calibration');
+
+  const leagueMap = new Map<string, number>();
+  for (const p of players ?? []) {
+    leagueMap.set(p.home_league, (leagueMap.get(p.home_league) ?? 0) + 1);
+  }
+
+  // Check which leagues already have fixtures
+  const { data: games } = await supabase
+    .from('games')
+    .select('league')
+    .eq('season', Number(season))
+    .eq('competition_phase', 'league_phase');
+
+  const leaguesWithFixtures = new Set((games ?? []).map(g => g.league));
+
+  const leagues = Array.from(leagueMap.entries())
+    .filter(([league]) => /^league_\d+$/.test(league))
+    .map(([league, count]) => ({
+      league,
+      playerCount: count,
+      hasFixtures: leaguesWithFixtures.has(league),
+    }))
+    .sort((a, b) => a.league.localeCompare(b.league));
+
+  return NextResponse.json({ leagues });
+}
+</file>
+
+<file path="src/app/api/admin/players/[id]/route.ts">
+import { createClient } from '@supabase/supabase-js';
+import { NextRequest, NextResponse } from 'next/server';
+
+const adminSupabase = () =>
+  createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!
+  );
+
+export async function PATCH(
+  req: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  if (req.headers.get('x-admin-secret') !== process.env.ADMIN_SECRET) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  const { id } = await params;
+  const { is_active } = await req.json();
+  const supabase = adminSupabase();
+
+  const { error } = await supabase
+    .from('players')
+    .update({ is_active })
+    .eq('id', id);
+
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  return NextResponse.json({ success: true });
+}
+</file>
+
+<file path="src/app/api/admin/players/reactivate-all/route.ts">
 import { createClient } from '@supabase/supabase-js';
 import { NextRequest, NextResponse } from 'next/server';
 
@@ -2450,78 +2238,6 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({
     reactivated: inactiveReturning?.length ?? 0,
     season: season.id,
-  });
-}
-</file>
-
-<file path="src/app/admin/stats/route.ts">
-import { createClient } from '@supabase/supabase-js';
-import { NextRequest, NextResponse } from 'next/server';
-
-const adminSupabase = () =>
-  createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!
-  );
-
-export async function GET(req: NextRequest) {
-  if (req.headers.get('x-admin-secret') !== process.env.ADMIN_SECRET) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
-
-  const supabase = adminSupabase();
-
-  // Fetch season first — it's needed for the other queries
-  const { data: season } = await supabase
-    .from('seasons')
-    .select('id, name, status')
-    .in('status', ['registration', 'draft', 'active', 'champions_league'])
-    .order('id', { ascending: false })
-    .limit(1)
-    .single();
-
-  const currentSeasonId = season?.id ?? 1;
-
-  // Now fetch everything else using the resolved season ID
-  const [
-    { count: totalPlayers },
-    { count: activePlayers },
-    { count: newPlayers },
-    { count: returningPlayers },
-    { count: calibrating },
-    { count: pendingGames },
-    { count: completedGames },
-    { data: leagueData },
-  ] = await Promise.all([
-    supabase.from('players').select('*', { count: 'exact', head: true }),
-    supabase.from('players').select('*', { count: 'exact', head: true }).eq('is_active', true),
-    supabase.from('players').select('*', { count: 'exact', head: true }).eq('is_active', true).eq('joining_season', currentSeasonId),
-    supabase.from('players').select('*', { count: 'exact', head: true }).eq('is_active', true).lt('joining_season', currentSeasonId),
-    supabase.from('players').select('*', { count: 'exact', head: true }).eq('is_active', true).eq('calibration_complete', false),
-    supabase.from('games').select('*', { count: 'exact', head: true }).eq('result', '*').neq('league', 'calibration'),
-    supabase.from('games').select('*', { count: 'exact', head: true }).neq('result', '*').neq('league', 'calibration'),
-    supabase.from('players').select('home_league').eq('is_active', true).neq('home_league', 'unassigned').neq('home_league', 'calibration'),
-  ]);
-
-  // Group players by league
-  const leagueMap = new Map<string, number>();
-  for (const p of leagueData ?? []) {
-    leagueMap.set(p.home_league, (leagueMap.get(p.home_league) ?? 0) + 1);
-  }
-  const leagues = Array.from(leagueMap.entries())
-    .map(([league, count]) => ({ league, count }))
-    .sort((a, b) => a.league.localeCompare(b.league));
-
-  return NextResponse.json({
-    season,
-    totalPlayers: totalPlayers ?? 0,
-    activePlayers: activePlayers ?? 0,
-    newPlayersThisSeason: newPlayers ?? 0,
-    returningPlayers: returningPlayers ?? 0,
-    calibratingPlayers: calibrating ?? 0,
-    pendingGames: pendingGames ?? 0,
-    completedGames: completedGames ?? 0,
-    leagues,
   });
 }
 </file>
@@ -2754,6 +2470,78 @@ async function generateCupBracket(
   if (cupGames.length > 0) {
     await supabase.from("games").insert(cupGames);
   }
+}
+</file>
+
+<file path="src/app/api/admin/stats/route.ts">
+import { createClient } from '@supabase/supabase-js';
+import { NextRequest, NextResponse } from 'next/server';
+
+const adminSupabase = () =>
+  createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!
+  );
+
+export async function GET(req: NextRequest) {
+  if (req.headers.get('x-admin-secret') !== process.env.ADMIN_SECRET) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
+  const supabase = adminSupabase();
+
+  // Fetch season first — it's needed for the other queries
+  const { data: season } = await supabase
+    .from('seasons')
+    .select('id, name, status')
+    .in('status', ['registration', 'draft', 'active', 'champions_league'])
+    .order('id', { ascending: false })
+    .limit(1)
+    .single();
+
+  const currentSeasonId = season?.id ?? 1;
+
+  // Now fetch everything else using the resolved season ID
+  const [
+    { count: totalPlayers },
+    { count: activePlayers },
+    { count: newPlayers },
+    { count: returningPlayers },
+    { count: calibrating },
+    { count: pendingGames },
+    { count: completedGames },
+    { data: leagueData },
+  ] = await Promise.all([
+    supabase.from('players').select('*', { count: 'exact', head: true }),
+    supabase.from('players').select('*', { count: 'exact', head: true }).eq('is_active', true),
+    supabase.from('players').select('*', { count: 'exact', head: true }).eq('is_active', true).eq('joining_season', currentSeasonId),
+    supabase.from('players').select('*', { count: 'exact', head: true }).eq('is_active', true).lt('joining_season', currentSeasonId),
+    supabase.from('players').select('*', { count: 'exact', head: true }).eq('is_active', true).eq('calibration_complete', false),
+    supabase.from('games').select('*', { count: 'exact', head: true }).eq('result', '*').neq('league', 'calibration'),
+    supabase.from('games').select('*', { count: 'exact', head: true }).neq('result', '*').neq('league', 'calibration'),
+    supabase.from('players').select('home_league').eq('is_active', true).neq('home_league', 'unassigned').neq('home_league', 'calibration'),
+  ]);
+
+  // Group players by league
+  const leagueMap = new Map<string, number>();
+  for (const p of leagueData ?? []) {
+    leagueMap.set(p.home_league, (leagueMap.get(p.home_league) ?? 0) + 1);
+  }
+  const leagues = Array.from(leagueMap.entries())
+    .map(([league, count]) => ({ league, count }))
+    .sort((a, b) => a.league.localeCompare(b.league));
+
+  return NextResponse.json({
+    season,
+    totalPlayers: totalPlayers ?? 0,
+    activePlayers: activePlayers ?? 0,
+    newPlayersThisSeason: newPlayers ?? 0,
+    returningPlayers: returningPlayers ?? 0,
+    calibratingPlayers: calibrating ?? 0,
+    pendingGames: pendingGames ?? 0,
+    completedGames: completedGames ?? 0,
+    leagues,
+  });
 }
 </file>
 
@@ -4753,45 +4541,6 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 }
 
 export function useToast() { return useContext(ToastContext); }
-</file>
-
-<file path="src/lib/coefficient.ts">
-export interface CLPlayerResult {
-  player_id: string; from_league: string;
-  qualified: boolean; advanced_from_group: boolean;
-  reached_semifinal: boolean; reached_final: boolean; won_cl: boolean;
-}
-
-export interface LeagueCoefficientUpdate {
-  league: string;
-  qualifiers_points: number; group_stage_points: number;
-  semifinal_points: number; final_points: number; winner_bonus: number;
-  coefficient_score: number;
-}
-
-const POINTS = { qualifier: 1, group_advance: 2, semifinal: 3, final: 4, winner: 5 };
-
-export function calculateLeagueCoefficients(results: CLPlayerResult[]): LeagueCoefficientUpdate[] {
-  const map = new Map<string, LeagueCoefficientUpdate>();
-
-  for (const r of results) {
-    if (!map.has(r.from_league)) {
-      map.set(r.from_league, { league: r.from_league, qualifiers_points: 0, group_stage_points: 0, semifinal_points: 0, final_points: 0, winner_bonus: 0, coefficient_score: 0 });
-    }
-    const lc = map.get(r.from_league)!;
-    if (r.qualified)            lc.qualifiers_points  += POINTS.qualifier;
-    if (r.advanced_from_group)  lc.group_stage_points += POINTS.group_advance;
-    if (r.reached_semifinal)    lc.semifinal_points   += POINTS.semifinal;
-    if (r.reached_final)        lc.final_points       += POINTS.final;
-    if (r.won_cl)               lc.winner_bonus       += POINTS.winner;
-  }
-
-  for (const [, lc] of map) {
-    lc.coefficient_score = lc.qualifiers_points + lc.group_stage_points + lc.semifinal_points + lc.final_points + lc.winner_bonus;
-  }
-
-  return [...map.values()].sort((a, b) => b.coefficient_score - a.coefficient_score);
-}
 </file>
 
 <file path="src/lib/fixture-generator.ts">
@@ -6886,122 +6635,269 @@ async function whatsappAnnounce() {
 whatsappAnnounce().catch(console.error);
 </file>
 
-<file path="src/app/api/admin/season/route.ts">
-import { NextRequest, NextResponse } from 'next/server';
-import { createClient } from '@supabase/supabase-js';
- 
-const adminSupabase = () =>
-  createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!
-  );
- 
-// Valid season status transitions
-const TRANSITIONS: Record<string, string> = {
-  registration:      'draft',
-  draft:             'active',
-  active:            'playoffs',
-  playoffs:          'champions_league',
-  champions_league:  'complete',
-};
- 
-// POST /api/admin/season
-// Actions: advance_status | create_season | process_promotion_relegation | reset_forfeits
-export async function POST(req: NextRequest) {
-  if (req.headers.get('x-admin-secret') !== process.env.ADMIN_SECRET)
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
- 
-  const body = await req.json();
-  const { action, season } = body;
-  const supabase = adminSupabase();
- 
-  // ── advance_status ────────────────────────────────────────────
-  if (action === 'advance_status') {
-    const { data: s } = await supabase.from('seasons').select('id, status').eq('id', season).single();
-    if (!s) return NextResponse.json({ error: 'Season not found' }, { status: 404 });
-    const next = TRANSITIONS[s.status];
-    if (!next) return NextResponse.json({ error: `Cannot advance from status: ${s.status}` }, { status: 400 });
- 
-    await supabase.from('seasons').update({ status: next }).eq('id', season);
-    return NextResponse.json({ success: true, previous_status: s.status, new_status: next });
-  }
- 
-  // ── create_season ─────────────────────────────────────────────
-  if (action === 'create_season') {
-    const { name, start_date, end_date } = body;
-    const { data: existing } = await supabase.from('seasons').select('id').order('id', { ascending: false }).limit(1).single();
-    const newId = (existing?.id ?? 0) + 1;
-    const { data, error } = await supabase.from('seasons').insert({
-      id: newId, name: name ?? `Season ${newId}`,
-      start_date: start_date ?? new Date().toISOString().split('T')[0],
-      end_date: end_date ?? null, status: 'registration',
-    }).select().single();
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-    return NextResponse.json({ success: true, season: data });
-  }
- 
-  // ── process_promotion_relegation ──────────────────────────────
-  if (action === 'process_promotion_relegation') {
-    const leagues = ['league_1', 'league_2', 'league_3', 'league_4'];
-    const changes: any[] = [];
- 
-    for (const league of leagues) {
-      // Get final Premier standings
-      const { data: premierStandings } = await supabase
-        .from('standings')
-        .select('player_id, points, wins')
-        .eq('season', season).eq('league', league).eq('tier', 'premier')
-        .order('points', { ascending: false })
-        .order('wins', { ascending: false });
- 
-      const { data: devStandings } = await supabase
-        .from('standings')
-        .select('player_id, points, wins')
-        .eq('season', season).eq('league', league).eq('tier', 'development')
-        .order('points', { ascending: false })
-        .order('wins', { ascending: false });
- 
-      if (!premierStandings?.length || !devStandings?.length) continue;
- 
-      // Bottom 2 Premier → relegated; Top 2 Development → promoted
-      const relegated = premierStandings.slice(-2);
-      const promoted = devStandings.slice(0, 2);
- 
-      for (const p of relegated) {
-        // tier removed
-        changes.push({ player_id: p.player_id, action: 'relegated', league, from: 'premier', to: 'development' });
-        await supabase.from('notifications').insert({
-          player_id: p.player_id, type: 'promotion_relegation', title: 'Relegated to Development Tier',
-          message: `You have been relegated to the Development Tier for Season ${season + 1}. Fight your way back!`,
-        });
-      }
- 
-      for (const p of promoted) {
-        // tier removed
-        changes.push({ player_id: p.player_id, action: 'promoted', league, from: 'development', to: 'premier' });
-        await supabase.from('notifications').insert({
-          player_id: p.player_id, type: 'promotion_relegation', title: 'Promoted to Premier Tier!',
-          message: `Congratulations! You have been promoted to the Premier Tier for Season ${season + 1}.`,
-        });
-        // Award Comeback King badge if they were previously relegated
-        await supabase.from('player_badges').upsert({
-          player_id: p.player_id, badge_type: 'comeback_king', season,
-          description: 'Promoted after finishing in top 2 of Development Tier',
-        }, { onConflict: 'player_id,badge_type,season', ignoreDuplicates: true });
-      }
+<file path="src/app/admin/anti-cheat/page.tsx">
+'use client';
+
+import { Loader2, CheckCircle, AlertTriangle, Shield, Eye, XCircle } from 'lucide-react';
+import Link from 'next/link';
+import { useEffect, useState } from 'react';
+
+interface FlaggedGame {
+  id: string;
+  result: string;
+  played_at: string;
+  white_player: { id: string; full_name: string };
+  black_player: { id: string; full_name: string };
+  white_anticheat_score: number;
+  black_anticheat_score: number;
+  anticheat_flagged: boolean;
+  competition_phase: string;
+  league: string;
+}
+
+interface Violation {
+  id: string;
+  player_id: string;
+  game_id: string;
+  violation_type: string;
+  severity: string;
+  description: string;
+  resolved_at: string | null;
+  created_at: string;
+  player?: { id: string; full_name: string };
+}
+
+export default function AdminAntiCheatPage() {
+  const [flaggedGames, setFlaggedGames] = useState<FlaggedGame[]>([]);
+  const [pendingViolations, setPendingViolations] = useState<Violation[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+  const [resolving, setResolving] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetchData();
+  }, []);
+
+  async function fetchData() {
+    try {
+      const [gamesRes, violationsRes] = await Promise.all([
+        fetch('/api/admin/anti-cheat/flagged-games', {
+          headers: { 'x-admin-secret': 'ss4-admin-2026-abc' },
+        }),
+        fetch('/api/admin/anti-cheat/pending-violations', {
+          headers: { 'x-admin-secret': 'ss4-admin-2026-abc' },
+        }),
+      ]);
+      const games = await gamesRes.json();
+      const violations = await violationsRes.json();
+      setFlaggedGames(games.flagged_games ?? []);
+      setPendingViolations(violations.violations ?? []);
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
     }
- 
-    return NextResponse.json({ success: true, changes });
   }
- 
-  // ── reset_forfeits ────────────────────────────────────────────
-  if (action === 'reset_forfeits') {
-    // Called at start of each new season
-    await supabase.from('players').update({ season_forfeit_count: 0 });
-    return NextResponse.json({ success: true, message: 'Forfeit counts reset for all players' });
+
+  async function resolveViolation(violationId: string, resolution: 'dismissed' | 'confirmed', severity?: string) {
+    setResolving(violationId);
+    setError('');
+    try {
+      const res = await fetch('/api/admin/anti-cheat/resolve', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-admin-secret': 'ss4-admin-2026-abc',
+        },
+        body: JSON.stringify({ violation_id: violationId, resolution, severity }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      setSuccess(`Violation ${resolution}. ${data.action_taken ?? ''}`);
+      fetchData();
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setResolving(null);
+    }
   }
- 
-  return NextResponse.json({ error: 'Unknown action' }, { status: 400 });
+
+  function scoreColor(score: number): string {
+    if (score >= 90) return 'text-red-400';
+    if (score >= 75) return 'text-amber-400';
+    return 'text-green-400';
+  }
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <Loader2 className="animate-spin text-gold" size={28} />
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-8 page-enter">
+      <div>
+        <h1 className="font-display text-2xl font-bold text-chalk">Anti-Cheat Review</h1>
+        <p className="text-ink-400 text-sm mt-1">Review flagged games and resolve violations</p>
+      </div>
+
+      {/* Error / Success */}
+      {error && (
+        <div className="card p-4 bg-red-900/20 border-red-700/50 text-red-300 text-sm">{error}</div>
+      )}
+      {success && (
+        <div className="card p-4 bg-green-900/20 border-green-700/50 text-green-300 text-sm flex items-center gap-2">
+          <CheckCircle size={14} /> {success}
+        </div>
+      )}
+
+      {/* Stats */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="card p-4">
+          <div className="text-xs text-ink-400 mb-1">Flagged Games</div>
+          <div className="text-2xl font-bold text-amber-400">{flaggedGames.length}</div>
+        </div>
+        <div className="card p-4">
+          <div className="text-xs text-ink-400 mb-1">Pending Reviews</div>
+          <div className="text-2xl font-bold text-red-400">{pendingViolations.length}</div>
+        </div>
+      </div>
+
+      {/* Pending violations */}
+      {pendingViolations.length > 0 && (
+        <div>
+          <h2 className="font-display text-lg font-bold text-chalk mb-3 flex items-center gap-2">
+            <AlertTriangle size={16} className="text-red-400" />
+            Pending Violations
+          </h2>
+          <div className="space-y-3">
+            {pendingViolations.map(v => (
+              <div key={v.id} className="card p-5 space-y-3">
+                <div className="flex items-start justify-between">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-semibold text-chalk">
+                        {v.player?.full_name ?? v.player_id}
+                      </span>
+                      <span className={`text-xs px-2 py-0.5 rounded-full ${
+                        v.severity === 'game_forfeit' 
+                          ? 'bg-red-900/30 text-red-300' 
+                          : 'bg-amber-900/30 text-amber-300'
+                      }`}>
+                        {v.severity.replace(/_/g, ' ')}
+                      </span>
+                    </div>
+                    <div className="text-xs text-ink-400 mt-1">{v.description}</div>
+                    <div className="text-xs text-ink-500 mt-1">
+                      {new Date(v.created_at).toLocaleDateString()} ·{' '}
+                      <Link href={`/game/${v.game_id}/review`} className="text-gold hover:underline">
+                        View Game
+                      </Link>
+                    </div>
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => resolveViolation(v.id, 'confirmed', 'game_forfeit')}
+                    disabled={resolving === v.id}
+                    className="btn-danger btn-sm gap-1.5"
+                  >
+                    <XCircle size={12} />
+                    Confirm & Forfeit Game
+                  </button>
+                  <button
+                    onClick={() => resolveViolation(v.id, 'confirmed', 'suspension')}
+                    disabled={resolving === v.id}
+                    className="btn-danger btn-sm gap-1.5"
+                  >
+                    <Shield size={12} />
+                    Confirm & Suspend Player
+                  </button>
+                  <button
+                    onClick={() => resolveViolation(v.id, 'confirmed', 'ban')}
+                    disabled={resolving === v.id}
+                    className="btn-danger btn-sm gap-1.5"
+                  >
+                    <Shield size={12} />
+                    Confirm & Ban
+                  </button>
+                  <button
+                    onClick={() => resolveViolation(v.id, 'dismissed')}
+                    disabled={resolving === v.id}
+                    className="btn-ghost btn-sm gap-1.5 ml-auto"
+                  >
+                    <CheckCircle size={12} />
+                    Dismiss (False Flag)
+                  </button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Flagged games */}
+      <div>
+        <h2 className="font-display text-lg font-bold text-chalk mb-3 flex items-center gap-2">
+          <Eye size={16} className="text-amber-400" />
+          Flagged Games
+        </h2>
+        {flaggedGames.length === 0 ? (
+          <div className="card p-8 text-center text-ink-400 text-sm">
+            <Shield size={32} className="mx-auto mb-3 text-green-400" />
+            No flagged games. All clear.
+          </div>
+        ) : (
+          <div className="card overflow-hidden">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-xs text-ink-400 border-b border-ink-700 bg-ink-900">
+                  <th className="px-4 py-3 text-left">Game</th>
+                  <th className="px-4 py-3 text-center">Result</th>
+                  <th className="px-4 py-3 text-center">White Score</th>
+                  <th className="px-4 py-3 text-center">Black Score</th>
+                  <th className="px-4 py-3 text-center">Date</th>
+                  <th className="px-4 py-3 text-right">Review</th>
+                </tr>
+              </thead>
+              <tbody>
+                {flaggedGames.map(g => (
+                  <tr key={g.id} className="border-b border-ink-700/50 hover:bg-ink-800/50">
+                    <td className="px-4 py-3">
+                      <span className="text-chalk">{g.white_player?.full_name}</span>
+                      <span className="text-ink-500 mx-1.5">vs</span>
+                      <span className="text-chalk">{g.black_player?.full_name}</span>
+                    </td>
+                    <td className="px-4 py-3 text-center font-mono text-gold">{g.result}</td>
+                    <td className={`px-4 py-3 text-center font-mono font-bold ${scoreColor(g.white_anticheat_score)}`}>
+                      {g.white_anticheat_score}%
+                    </td>
+                    <td className={`px-4 py-3 text-center font-mono font-bold ${scoreColor(g.black_anticheat_score)}`}>
+                      {g.black_anticheat_score}%
+                    </td>
+                    <td className="px-4 py-3 text-center text-ink-500 text-xs">
+                      {g.played_at ? new Date(g.played_at).toLocaleDateString() : '—'}
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      <Link
+                        href={`/game/${g.id}/review`}
+                        className="text-xs text-gold hover:underline"
+                      >
+                        Review Game →
+                      </Link>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }
 </file>
 
@@ -9605,6 +9501,45 @@ export function calculateCalibrationRating(games: CalibrationGame[]): number {
 }
 </file>
 
+<file path="src/lib/coefficient.ts">
+export interface CLPlayerResult {
+  player_id: string; from_league: string;
+  qualified: boolean; advanced_from_group: boolean;
+  reached_semifinal: boolean; reached_final: boolean; won_cl: boolean;
+}
+
+export interface LeagueCoefficientUpdate {
+  league: string;
+  qualifiers_points: number; group_stage_points: number;
+  semifinal_points: number; final_points: number; winner_bonus: number;
+  coefficient_score: number;
+}
+
+const POINTS = { qualifier: 1, group_advance: 2, semifinal: 3, final: 4, winner: 5 };
+
+export function calculateLeagueCoefficients(results: CLPlayerResult[]): LeagueCoefficientUpdate[] {
+  const map = new Map<string, LeagueCoefficientUpdate>();
+
+  for (const r of results) {
+    if (!map.has(r.from_league)) {
+      map.set(r.from_league, { league: r.from_league, qualifiers_points: 0, group_stage_points: 0, semifinal_points: 0, final_points: 0, winner_bonus: 0, coefficient_score: 0 });
+    }
+    const lc = map.get(r.from_league)!;
+    if (r.qualified)            lc.qualifiers_points  += POINTS.qualifier;
+    if (r.advanced_from_group)  lc.group_stage_points += POINTS.group_advance;
+    if (r.reached_semifinal)    lc.semifinal_points   += POINTS.semifinal;
+    if (r.reached_final)        lc.final_points       += POINTS.final;
+    if (r.won_cl)               lc.winner_bonus       += POINTS.winner;
+  }
+
+  for (const [, lc] of map) {
+    lc.coefficient_score = lc.qualifiers_points + lc.group_stage_points + lc.semifinal_points + lc.final_points + lc.winner_bonus;
+  }
+
+  return [...map.values()].sort((a, b) => b.coefficient_score - a.coefficient_score);
+}
+</file>
+
 <file path="src/lib/games-and-notifications.ts">
 // ═══════════════════════════════════════════════════════════════
 // src/app/api/games/[id]/route.ts
@@ -9754,271 +9689,6 @@ export async function GET(_req: NextRequest, { params }: { params: { id: string 
   return NextResponse.json({ player, standings, recentGames, ratingHistory });
 }
 `;
-</file>
-
-<file path="src/lib/snake-draft.ts">
-/**
- * SS4 Chess League — Snake Draft v2
- *
- * Rules:
- *  - Target league size: LEAGUE_TARGET_SIZE (7)
- *  - Acceptable range: 6–8 players per league
- *  - No tiers — one flat league table per league
- *  - Snake pattern distributes players of similar rating evenly
- *  - Returning players use their end-of-season draft_rating
- *  - New players use seed_rating from calibration
- *  - Draft order for next season: sorted by current season's final standing position,
- *    then by ss4_rating ascending (worst performers pick first = fairer competition)
- */
-
-export const LEAGUE_TARGET_SIZE = 7;
-export const LEAGUE_MIN_SIZE    = 6;
-export const LEAGUE_MAX_SIZE    = 8;
-
-export const CUP_QUALIFIERS_PER_LEAGUE = 2; // top-2 from each league → Champions Cup
-
-export interface PlayerSeed {
-  id: string;
-  full_name: string;
-  /** For draft sorting: use draft_rating (end-of-season) for returning players,
-   *  seed_rating for new players */
-  ss4_rating: number;
-  rating_deviation: number;
-  is_returning?: boolean;
-  previous_league?: string;
-  previous_position?: number; // league finish last season (for draft order tiebreak)
-}
-
-export interface DraftAssignment {
-  player_id: string;
-  full_name: string;
-  seed_rating: number;
-  draft_position: number;
-  assigned_league: string;
-  is_returning: boolean;
-  previous_league: string | null;
-}
-
-export interface DraftResult {
-  assignments: DraftAssignment[];
-  leagues: Record<string, DraftAssignment[]>;
-  stats: LeagueStat[];
-  league_count: number;
-}
-
-export interface LeagueStat {
-  league: string;
-  player_count: number;
-  avg_rating: number;
-  min_rating: number;
-  max_rating: number;
-  rating_spread: number;
-}
-
-export function leagueName(i: number): string { return `league_${i + 1}`; }
-
-export function leagueDisplayName(key: string): string {
-  const map: Record<string, string> = {
-    league_1: 'League 1', league_2: 'League 2', league_3: 'League 3',
-    league_4: 'League 4', league_5: 'League 5', league_6: 'League 6',
-    league_7: 'League 7', league_8: 'League 8',
-    champions_league: 'Champions League',
-    scel: 'SCEL',
-    open_cup: 'SCEL', // Legacy
-    continental_shield: 'Continental Shield',
-    blitz: 'Blitz Invitational',
-    newcomer_shield: 'Newcomer Shield',
-    casual: 'Casual',
-  };
-  return map[key] ?? key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
-}
-
-/**
- * Compute optimal league count for n players.
- * Tries to find a count where every league has 6–8 players,
- * as close to 7 as possible.
- */
-export function getLeagueCount(n: number): number {
-  if (n < LEAGUE_MIN_SIZE) throw new Error(`Need at least ${LEAGUE_MIN_SIZE} players to run a draft`);
-
-  // Try counts from ceil(n/8) to floor(n/6)
-  const minLeagues = Math.ceil(n / LEAGUE_MAX_SIZE);
-  const maxLeagues = Math.floor(n / LEAGUE_MIN_SIZE);
-
-  let bestCount = minLeagues;
-  let bestDeviation = Infinity;
-
-  for (let k = minLeagues; k <= maxLeagues; k++) {
-    // With k leagues, sizes will be floor(n/k) or ceil(n/k)
-    const base = Math.floor(n / k);
-    const remainder = n % k;
-    // remainder leagues get (base+1), rest get base
-    const maxSize = remainder > 0 ? base + 1 : base;
-    const deviation = Math.abs(maxSize - LEAGUE_TARGET_SIZE) +
-                      Math.abs(base - LEAGUE_TARGET_SIZE);
-    if (deviation < bestDeviation) {
-      bestDeviation = deviation;
-      bestCount = k;
-    }
-  }
-
-  return bestCount;
-}
-
-/**
- * Main snake draft function.
- *
- * Sort order: best-to-worst rating (highest rated gets first pick position,
- * which means they go into League 1 — the most competitive league).
- * Snake reverses direction each pass so every league gets a balanced spread.
- */
-export function runSnakeDraft(players: PlayerSeed[]): DraftResult {
-  if (players.length < LEAGUE_MIN_SIZE) {
-    throw new Error(`Need at least ${LEAGUE_MIN_SIZE} players to draft`);
-  }
-
-  const leagueCount = getLeagueCount(players.length);
-
-  // Sort best → worst rating for draft order
-  const sorted = [...players].sort((a, b) => {
-    // Primary: rating descending
-    const ratingDiff = b.ss4_rating - a.ss4_rating;
-    if (Math.abs(ratingDiff) > 1) return ratingDiff;
-    // Tiebreak: returning players with better previous finish pick first
-    const ap = a.previous_position ?? 999;
-    const bp = b.previous_position ?? 999;
-    return ap - bp;
-  });
-
-  // Snake fill: forward pass then reverse, alternating
-  const buckets: PlayerSeed[][] = Array.from({ length: leagueCount }, () => []);
-  let direction = 1;
-  let li = 0;
-
-  for (const player of sorted) {
-    buckets[li].push(player);
-    const atEnd = direction === 1 ? li === leagueCount - 1 : li === 0;
-    if (atEnd) {
-      direction *= -1;
-    } else {
-      li += direction;
-    }
-  }
-
-  // Build assignments
-  const assignments: DraftAssignment[] = [];
-  for (let i = 0; i < leagueCount; i++) {
-    const key = leagueName(i);
-    for (const p of buckets[i]) {
-      const draftPos = sorted.findIndex(x => x.id === p.id) + 1;
-      assignments.push({
-        player_id:       p.id,
-        full_name:       p.full_name,
-        seed_rating:     p.ss4_rating,
-        draft_position:  draftPos,
-        assigned_league: key,
-        is_returning:    p.is_returning ?? false,
-        previous_league: p.previous_league ?? null,
-      });
-    }
-  }
-
-  assignments.sort((a, b) => a.draft_position - b.draft_position);
-
-  // Build per-league map
-  const leagues: DraftResult['leagues'] = {};
-  for (let i = 0; i < leagueCount; i++) {
-    const key = leagueName(i);
-    leagues[key] = assignments.filter(a => a.assigned_league === key);
-  }
-
-  // Compute stats
-  const stats: LeagueStat[] = Array.from({ length: leagueCount }, (_, i) => {
-    const key = leagueName(i);
-    const group = leagues[key];
-    const ratings = group.map(a => a.seed_rating);
-    const avg = Math.round(ratings.reduce((s, r) => s + r, 0) / ratings.length);
-    const min = Math.min(...ratings);
-    const max = Math.max(...ratings);
-    return {
-      league:        key,
-      player_count:  group.length,
-      avg_rating:    avg,
-      min_rating:    Math.round(min),
-      max_rating:    Math.round(max),
-      rating_spread: Math.round(max - min),
-    };
-  });
-
-  return { assignments, leagues, stats, league_count: leagueCount };
-}
-
-/**
- * Verify that no two leagues have avg ratings more than 150 apart.
- * A tighter threshold than before since we have no tiers as buffer.
- */
-export function checkLeagueBalance(stats: LeagueStat[]): {
-  balanced: boolean;
-  worst_gap: number;
-  details: string;
-} {
-  let worstGap = 0;
-  let worstPair = '';
-
-  for (let i = 0; i < stats.length; i++) {
-    for (let j = i + 1; j < stats.length; j++) {
-      const gap = Math.abs(stats[i].avg_rating - stats[j].avg_rating);
-      if (gap > worstGap) {
-        worstGap = gap;
-        worstPair = `${stats[i].league} vs ${stats[j].league}`;
-      }
-    }
-  }
-
-  return {
-    balanced:  worstGap <= 150,
-    worst_gap: Math.round(worstGap),
-    details:   worstGap <= 150
-      ? `All leagues balanced (max gap: ${Math.round(worstGap)} pts)`
-      : `⚠ ${worstPair} gap: ${Math.round(worstGap)} pts — consider manual review`,
-  };
-}
-
-/**
- * Generate round-robin fixture pairs for a league.
- * Uses Berger tables (circle method) for an even schedule.
- * Returns rounds array, each round containing [white_id, black_id] pairs.
- */
-export function generateRoundRobin(playerIds: string[]): [string, string][][] {
-  const n = playerIds.length;
-  const ids = [...playerIds];
-
-  // If odd number, add a bye placeholder
-  if (n % 2 !== 0) ids.push('BYE');
-
-  const rounds: [string, string][][] = [];
-  const half = ids.length / 2;
-
-  for (let round = 0; round < ids.length - 1; round++) {
-    const pairs: [string, string][] = [];
-    for (let i = 0; i < half; i++) {
-      const white = ids[i];
-      const black = ids[ids.length - 1 - i];
-      if (white !== 'BYE' && black !== 'BYE') {
-        // Alternate colors by round to balance white/black assignments
-        if (round % 2 === 0) pairs.push([white, black]);
-        else                 pairs.push([black, white]);
-      }
-    }
-    rounds.push(pairs);
-
-    // Rotate: fix position 0, rotate rest clockwise
-    const last = ids.pop()!;
-    ids.splice(1, 0, last);
-  }
-
-  return rounds;
-}
 </file>
 
 <file path="src/lib/utils.ts">
@@ -10293,188 +9963,144 @@ async function main() {
 main().catch(console.error);
 </file>
 
-<file path="src/app/admin/page.tsx">
-'use client';
-
-'use client';
-
-import { useEffect, useState } from 'react';
-import Link from 'next/link';
-import { 
-  Users, CheckCircle,
-  Loader2, Shuffle, PlayCircle, Calendar, Swords
-} from 'lucide-react';
-import { leagueName } from '@/lib/utils';
-
-interface AdminStats {
-  season: { id: number; name: string; status: string } | null;
-  totalPlayers: number;
-  activePlayers: number;
-  newPlayersThisSeason: number;
-  returningPlayers: number;
-  leagues: { league: string; count: number }[];
-  pendingGames: number;
-  completedGames: number;
-  calibratingPlayers: number;
+<file path="src/app/api/admin/season/route.ts">
+import { NextRequest, NextResponse } from 'next/server';
+import { createClient } from '@supabase/supabase-js';
+ 
+const adminSupabase = () =>
+  createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY!
+  );
+ 
+// Valid season status transitions
+const TRANSITIONS: Record<string, string> = {
+  registration:      'draft',
+  draft:             'active',
+  active:            'playoffs',
+  playoffs:          'champions_league',
+  champions_league:  'complete',
+};
+ 
+// POST /api/admin/season
+// Actions: advance_status | create_season | process_promotion_relegation | reset_forfeits
+export async function POST(req: NextRequest) {
+  if (req.headers.get('x-admin-secret') !== process.env.ADMIN_SECRET)
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+ 
+  const body = await req.json();
+  const { action, season } = body;
+  const supabase = adminSupabase();
+ 
+  // ── advance_status ────────────────────────────────────────────
+  if (action === 'advance_status') {
+    const { data: s } = await supabase.from('seasons').select('id, status').eq('id', season).single();
+    if (!s) return NextResponse.json({ error: 'Season not found' }, { status: 404 });
+    const next = TRANSITIONS[s.status];
+    if (!next) return NextResponse.json({ error: `Cannot advance from status: ${s.status}` }, { status: 400 });
+ 
+    await supabase.from('seasons').update({ status: next }).eq('id', season);
+    return NextResponse.json({ success: true, previous_status: s.status, new_status: next });
+  }
+ 
+  // ── create_season ─────────────────────────────────────────────
+  if (action === 'create_season') {
+    const { name, start_date, end_date } = body;
+    const { data: existing } = await supabase.from('seasons').select('id').order('id', { ascending: false }).limit(1).single();
+    const newId = (existing?.id ?? 0) + 1;
+    const { data, error } = await supabase.from('seasons').insert({
+      id: newId, name: name ?? `Season ${newId}`,
+      start_date: start_date ?? new Date().toISOString().split('T')[0],
+      end_date: end_date ?? null, status: 'registration',
+    }).select().single();
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    return NextResponse.json({ success: true, season: data });
+  }
+ 
+  // ── process_promotion_relegation ──────────────────────────────
+  if (action === 'process_promotion_relegation') {
+    const leagues = ['league_1', 'league_2', 'league_3', 'league_4'];
+    const changes: any[] = [];
+ 
+    for (const league of leagues) {
+      // Get final Premier standings
+      const { data: premierStandings } = await supabase
+        .from('standings')
+        .select('player_id, points, wins')
+        .eq('season', season).eq('league', league).eq('tier', 'premier')
+        .order('points', { ascending: false })
+        .order('wins', { ascending: false });
+ 
+      const { data: devStandings } = await supabase
+        .from('standings')
+        .select('player_id, points, wins')
+        .eq('season', season).eq('league', league).eq('tier', 'development')
+        .order('points', { ascending: false })
+        .order('wins', { ascending: false });
+ 
+      if (!premierStandings?.length || !devStandings?.length) continue;
+ 
+      // Bottom 2 Premier → relegated; Top 2 Development → promoted
+      const relegated = premierStandings.slice(-2);
+      const promoted = devStandings.slice(0, 2);
+ 
+      for (const p of relegated) {
+        // tier removed
+        changes.push({ player_id: p.player_id, action: 'relegated', league, from: 'premier', to: 'development' });
+        await supabase.from('notifications').insert({
+          player_id: p.player_id, type: 'promotion_relegation', title: 'Relegated to Development Tier',
+          message: `You have been relegated to the Development Tier for Season ${season + 1}. Fight your way back!`,
+        });
+      }
+ 
+      for (const p of promoted) {
+        // tier removed
+        changes.push({ player_id: p.player_id, action: 'promoted', league, from: 'development', to: 'premier' });
+        await supabase.from('notifications').insert({
+          player_id: p.player_id, type: 'promotion_relegation', title: 'Promoted to Premier Tier!',
+          message: `Congratulations! You have been promoted to the Premier Tier for Season ${season + 1}.`,
+        });
+        // Award Comeback King badge if they were previously relegated
+        await supabase.from('player_badges').upsert({
+          player_id: p.player_id, badge_type: 'comeback_king', season,
+          description: 'Promoted after finishing in top 2 of Development Tier',
+        }, { onConflict: 'player_id,badge_type,season', ignoreDuplicates: true });
+      }
+    }
+ 
+    return NextResponse.json({ success: true, changes });
+  }
+ 
+  // ── reset_forfeits ────────────────────────────────────────────
+  if (action === 'reset_forfeits') {
+    // Called at start of each new season
+    await supabase.from('players').update({ season_forfeit_count: 0 });
+    return NextResponse.json({ success: true, message: 'Forfeit counts reset for all players' });
+  }
+ 
+  return NextResponse.json({ error: 'Unknown action' }, { status: 400 });
 }
 
-export default function AdminOverviewPage() {
-  const [stats, setStats] = useState<AdminStats | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState('');
-
-  useEffect(() => {
-    fetchStats();
-  }, []);
-
-  async function fetchStats() {
-    try {
-      const res = await fetch('/api/admin/stats');
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error);
-      setStats(data);
-    } catch (e: any) {
-      setError(e.message);
-    } finally {
-      setLoading(false);
-    }
+export async function GET(req: NextRequest) {
+  if (req.headers.get('x-admin-secret') !== process.env.ADMIN_SECRET) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const statusColor: Record<string, string> = {
-    registration: 'bg-blue-900/30 text-blue-300 border-blue-700/50',
-    draft: 'bg-purple-900/30 text-purple-300 border-purple-700/50',
-    active: 'bg-green-900/30 text-green-300 border-green-700/50',
-    champions_league: 'bg-star/20 text-star border-star/40',
-    complete: 'bg-ink-700 text-ink-300 border-ink-600',
-  };
+  const supabase = adminSupabase();
+  const action = new URL(req.url).searchParams.get('action');
 
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <Loader2 className="animate-spin text-gold" size={28} />
-      </div>
-    );
+  if (action === 'current') {
+    const { data: season } = await supabase
+      .from('seasons')
+      .select('*')
+      .order('id', { ascending: false })
+      .limit(1)
+      .single();
+
+    return NextResponse.json({ season });
   }
 
-  return (
-    <div className="space-y-8 page-enter">
-      {/* Header */}
-      <div>
-        <h1 className="font-display text-2xl font-bold text-chalk">Admin Dashboard</h1>
-        <p className="text-ink-400 text-sm mt-1">League management overview</p>
-      </div>
-
-      {/* Season status banner */}
-      {stats?.season && (
-        <div className={`card p-5 border ${statusColor[stats.season.status] ?? 'border-ink-700'}`}>
-          <div className="flex items-center justify-between">
-            <div>
-              <div className="text-xs uppercase tracking-wider text-ink-400 mb-1">Current Season</div>
-              <div className="font-display text-xl font-bold text-chalk">
-                {stats.season.name}
-              </div>
-            </div>
-            <span className={`px-3 py-1 rounded-full text-xs font-semibold capitalize border ${statusColor[stats.season.status] ?? 'border-ink-600 text-ink-300'}`}>
-              {stats.season.status.replace(/_/g, ' ')}
-            </span>
-          </div>
-        </div>
-      )}
-
-      {/* Quick stats */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <div className="card p-4">
-          <div className="flex items-center gap-2 text-ink-400 text-xs mb-2">
-            <Users size={13} /> Total Players
-          </div>
-          <div className="text-2xl font-bold text-chalk">{stats?.totalPlayers ?? 0}</div>
-        </div>
-        <div className="card p-4">
-          <div className="flex items-center gap-2 text-ink-400 text-xs mb-2">
-            <Users size={13} /> Active
-          </div>
-          <div className="text-2xl font-bold text-green-400">{stats?.activePlayers ?? 0}</div>
-        </div>
-        <div className="card p-4">
-          <div className="flex items-center gap-2 text-ink-400 text-xs mb-2">
-            <Swords size={13} /> Pending Games
-          </div>
-          <div className="text-2xl font-bold text-amber-400">{stats?.pendingGames ?? 0}</div>
-        </div>
-        <div className="card p-4">
-          <div className="flex items-center gap-2 text-ink-400 text-xs mb-2">
-            <CheckCircle size={13} /> Completed
-          </div>
-          <div className="text-2xl font-bold text-chalk">{stats?.completedGames ?? 0}</div>
-        </div>
-      </div>
-
-      {/* Season breakdown */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-        <div className="card p-4">
-          <div className="text-xs text-ink-400 mb-3">Players This Season</div>
-          <div className="space-y-2">
-            <div className="flex justify-between text-sm">
-              <span className="text-ink-300">New players</span>
-              <span className="text-chalk font-semibold">{stats?.newPlayersThisSeason ?? 0}</span>
-            </div>
-            <div className="flex justify-between text-sm">
-              <span className="text-ink-300">Returning players</span>
-              <span className="text-chalk font-semibold">{stats?.returningPlayers ?? 0}</span>
-            </div>
-            <div className="flex justify-between text-sm">
-              <span className="text-ink-300">Need calibration</span>
-              <span className="text-amber-400 font-semibold">{stats?.calibratingPlayers ?? 0}</span>
-            </div>
-          </div>
-        </div>
-
-        <div className="card p-4">
-          <div className="text-xs text-ink-400 mb-3">Leagues</div>
-          <div className="space-y-2">
-            {stats?.leagues?.map(l => (
-              <div key={l.league} className="flex justify-between text-sm">
-                <Link href={`/league/${l.league}`} className="text-ink-300 hover:text-gold transition-colors">
-                  {leagueName(l.league)}
-                </Link>
-                <span className="text-chalk font-semibold">{l.count} players</span>
-              </div>
-            ))}
-            {(!stats?.leagues || stats.leagues.length === 0) && (
-              <p className="text-ink-500 text-sm">No leagues formed yet</p>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* Quick actions */}
-      <div>
-        <h2 className="font-display text-lg font-bold text-chalk mb-3">Quick Actions</h2>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-          <Link href="/admin/draft" className="card-hover p-4 text-center space-y-2">
-            <Shuffle size={20} className="mx-auto text-gold" />
-            <div className="text-sm text-chalk font-medium">Run Draft</div>
-            <div className="text-xs text-ink-400">Assign players to leagues</div>
-          </Link>
-          <Link href="/admin/fixtures" className="card-hover p-4 text-center space-y-2">
-            <Calendar size={20} className="mx-auto text-gold" />
-            <div className="text-sm text-chalk font-medium">Generate Fixtures</div>
-            <div className="text-xs text-ink-400">League + SCEL brackets</div>
-          </Link>
-          <Link href="/admin/season" className="card-hover p-4 text-center space-y-2">
-            <PlayCircle size={20} className="mx-auto text-gold" />
-            <div className="text-sm text-chalk font-medium">Season Controls</div>
-            <div className="text-xs text-ink-400">Advance & manage season</div>
-          </Link>
-          <Link href="/admin/players" className="card-hover p-4 text-center space-y-2">
-            <Users size={20} className="mx-auto text-gold" />
-            <div className="text-sm text-chalk font-medium">Manage Players</div>
-            <div className="text-xs text-ink-400">Reactivate & manage</div>
-          </Link>
-        </div>
-      </div>
-    </div>
-  );
+  return NextResponse.json({ error: 'Unknown action' }, { status: 400 });
 }
 </file>
 
@@ -11933,6 +11559,271 @@ export default function PlayersPage() {
 }
 </file>
 
+<file path="src/lib/snake-draft.ts">
+/**
+ * SS4 Chess League — Snake Draft v2
+ *
+ * Rules:
+ *  - Target league size: LEAGUE_TARGET_SIZE (7)
+ *  - Acceptable range: 6–8 players per league
+ *  - No tiers — one flat league table per league
+ *  - Snake pattern distributes players of similar rating evenly
+ *  - Returning players use their end-of-season draft_rating
+ *  - New players use seed_rating from calibration
+ *  - Draft order for next season: sorted by current season's final standing position,
+ *    then by ss4_rating ascending (worst performers pick first = fairer competition)
+ */
+
+export const LEAGUE_TARGET_SIZE = 7;
+export const LEAGUE_MIN_SIZE    = 6;
+export const LEAGUE_MAX_SIZE    = 8;
+
+export const CUP_QUALIFIERS_PER_LEAGUE = 2; // top-2 from each league → Champions Cup
+
+export interface PlayerSeed {
+  id: string;
+  full_name: string;
+  /** For draft sorting: use draft_rating (end-of-season) for returning players,
+   *  seed_rating for new players */
+  ss4_rating: number;
+  rating_deviation: number;
+  is_returning?: boolean;
+  previous_league?: string;
+  previous_position?: number; // league finish last season (for draft order tiebreak)
+}
+
+export interface DraftAssignment {
+  player_id: string;
+  full_name: string;
+  seed_rating: number;
+  draft_position: number;
+  assigned_league: string;
+  is_returning: boolean;
+  previous_league: string | null;
+}
+
+export interface DraftResult {
+  assignments: DraftAssignment[];
+  leagues: Record<string, DraftAssignment[]>;
+  stats: LeagueStat[];
+  league_count: number;
+}
+
+export interface LeagueStat {
+  league: string;
+  player_count: number;
+  avg_rating: number;
+  min_rating: number;
+  max_rating: number;
+  rating_spread: number;
+}
+
+export function leagueName(i: number): string { return `league_${i + 1}`; }
+
+export function leagueDisplayName(key: string): string {
+  const map: Record<string, string> = {
+    league_1: 'League 1', league_2: 'League 2', league_3: 'League 3',
+    league_4: 'League 4', league_5: 'League 5', league_6: 'League 6',
+    league_7: 'League 7', league_8: 'League 8',
+    champions_league: 'Champions League',
+    scel: 'SCEL',
+    open_cup: 'SCEL', // Legacy
+    continental_shield: 'Continental Shield',
+    blitz: 'Blitz Invitational',
+    newcomer_shield: 'Newcomer Shield',
+    casual: 'Casual',
+  };
+  return map[key] ?? key.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+}
+
+/**
+ * Compute optimal league count for n players.
+ * Tries to find a count where every league has 6–8 players,
+ * as close to 7 as possible.
+ */
+export function getLeagueCount(n: number): number {
+  if (n < LEAGUE_MIN_SIZE) throw new Error(`Need at least ${LEAGUE_MIN_SIZE} players to run a draft`);
+
+  // Try counts from ceil(n/8) to floor(n/6)
+  const minLeagues = Math.ceil(n / LEAGUE_MAX_SIZE);
+  const maxLeagues = Math.floor(n / LEAGUE_MIN_SIZE);
+
+  let bestCount = minLeagues;
+  let bestDeviation = Infinity;
+
+  for (let k = minLeagues; k <= maxLeagues; k++) {
+    // With k leagues, sizes will be floor(n/k) or ceil(n/k)
+    const base = Math.floor(n / k);
+    const remainder = n % k;
+    // remainder leagues get (base+1), rest get base
+    const maxSize = remainder > 0 ? base + 1 : base;
+    const deviation = Math.abs(maxSize - LEAGUE_TARGET_SIZE) +
+                      Math.abs(base - LEAGUE_TARGET_SIZE);
+    if (deviation < bestDeviation) {
+      bestDeviation = deviation;
+      bestCount = k;
+    }
+  }
+
+  return bestCount;
+}
+
+/**
+ * Main snake draft function.
+ *
+ * Sort order: best-to-worst rating (highest rated gets first pick position,
+ * which means they go into League 1 — the most competitive league).
+ * Snake reverses direction each pass so every league gets a balanced spread.
+ */
+export function runSnakeDraft(players: PlayerSeed[]): DraftResult {
+  if (players.length < LEAGUE_MIN_SIZE) {
+    throw new Error(`Need at least ${LEAGUE_MIN_SIZE} players to draft`);
+  }
+
+  const leagueCount = getLeagueCount(players.length);
+
+  // Sort best → worst rating for draft order
+  const sorted = [...players].sort((a, b) => {
+    // Primary: rating descending
+    const ratingDiff = b.ss4_rating - a.ss4_rating;
+    if (Math.abs(ratingDiff) > 1) return ratingDiff;
+    // Tiebreak: returning players with better previous finish pick first
+    const ap = a.previous_position ?? 999;
+    const bp = b.previous_position ?? 999;
+    return ap - bp;
+  });
+
+  // Snake fill: forward pass then reverse, alternating
+  const buckets: PlayerSeed[][] = Array.from({ length: leagueCount }, () => []);
+  let direction = 1;
+  let li = 0;
+
+  for (const player of sorted) {
+    buckets[li].push(player);
+    const atEnd = direction === 1 ? li === leagueCount - 1 : li === 0;
+    if (atEnd) {
+      direction *= -1;
+    } else {
+      li += direction;
+    }
+  }
+
+  // Build assignments
+  const assignments: DraftAssignment[] = [];
+  for (let i = 0; i < leagueCount; i++) {
+    const key = leagueName(i);
+    for (const p of buckets[i]) {
+      const draftPos = sorted.findIndex(x => x.id === p.id) + 1;
+      assignments.push({
+        player_id:       p.id,
+        full_name:       p.full_name,
+        seed_rating:     p.ss4_rating,
+        draft_position:  draftPos,
+        assigned_league: key,
+        is_returning:    p.is_returning ?? false,
+        previous_league: p.previous_league ?? null,
+      });
+    }
+  }
+
+  assignments.sort((a, b) => a.draft_position - b.draft_position);
+
+  // Build per-league map
+  const leagues: DraftResult['leagues'] = {};
+  for (let i = 0; i < leagueCount; i++) {
+    const key = leagueName(i);
+    leagues[key] = assignments.filter(a => a.assigned_league === key);
+  }
+
+  // Compute stats
+  const stats: LeagueStat[] = Array.from({ length: leagueCount }, (_, i) => {
+    const key = leagueName(i);
+    const group = leagues[key];
+    const ratings = group.map(a => a.seed_rating);
+    const avg = Math.round(ratings.reduce((s, r) => s + r, 0) / ratings.length);
+    const min = Math.min(...ratings);
+    const max = Math.max(...ratings);
+    return {
+      league:        key,
+      player_count:  group.length,
+      avg_rating:    avg,
+      min_rating:    Math.round(min),
+      max_rating:    Math.round(max),
+      rating_spread: Math.round(max - min),
+    };
+  });
+
+  return { assignments, leagues, stats, league_count: leagueCount };
+}
+
+/**
+ * Verify that no two leagues have avg ratings more than 150 apart.
+ * A tighter threshold than before since we have no tiers as buffer.
+ */
+export function checkLeagueBalance(stats: LeagueStat[]): {
+  balanced: boolean;
+  worst_gap: number;
+  details: string;
+} {
+  let worstGap = 0;
+  let worstPair = '';
+
+  for (let i = 0; i < stats.length; i++) {
+    for (let j = i + 1; j < stats.length; j++) {
+      const gap = Math.abs(stats[i].avg_rating - stats[j].avg_rating);
+      if (gap > worstGap) {
+        worstGap = gap;
+        worstPair = `${stats[i].league} vs ${stats[j].league}`;
+      }
+    }
+  }
+
+  return {
+    balanced:  worstGap <= 150,
+    worst_gap: Math.round(worstGap),
+    details:   worstGap <= 150
+      ? `All leagues balanced (max gap: ${Math.round(worstGap)} pts)`
+      : `⚠ ${worstPair} gap: ${Math.round(worstGap)} pts — consider manual review`,
+  };
+}
+
+/**
+ * Generate round-robin fixture pairs for a league.
+ * Uses Berger tables (circle method) for an even schedule.
+ * Returns rounds array, each round containing [white_id, black_id] pairs.
+ */
+export function generateRoundRobin(playerIds: string[]): [string, string][][] {
+  const n = playerIds.length;
+  const ids = [...playerIds];
+
+  // If odd number, add a bye placeholder
+  if (n % 2 !== 0) ids.push('BYE');
+
+  const rounds: [string, string][][] = [];
+  const half = ids.length / 2;
+
+  for (let round = 0; round < ids.length - 1; round++) {
+    const pairs: [string, string][] = [];
+    for (let i = 0; i < half; i++) {
+      const white = ids[i];
+      const black = ids[ids.length - 1 - i];
+      if (white !== 'BYE' && black !== 'BYE') {
+        // Alternate colors by round to balance white/black assignments
+        if (round % 2 === 0) pairs.push([white, black]);
+        else                 pairs.push([black, white]);
+      }
+    }
+    rounds.push(pairs);
+
+    // Rotate: fix position 0, rotate rest clockwise
+    const last = ids.pop()!;
+    ids.splice(1, 0, last);
+  }
+
+  return rounds;
+}
+</file>
+
 <file path="src/lib/types.ts">
 // SS4 Chess League — Complete TypeScript Types
 
@@ -12557,6 +12448,189 @@ ON CONFLICT (id) DO NOTHING;
 INSERT INTO league_coefficients (league, season, coefficient_score, cumulative_coefficient)
 VALUES ('league_1', 1, 0, 0), ('league_2', 1, 0, 0)
 ON CONFLICT (league, season) DO NOTHING;
+</file>
+
+<file path="src/app/admin/page.tsx">
+'use client';
+
+import { useEffect, useState } from 'react';
+import Link from 'next/link';
+import { 
+  Users, CheckCircle,
+  Loader2, Shuffle, PlayCircle, Calendar, Swords
+} from 'lucide-react';
+import { leagueName } from '@/lib/utils';
+
+interface AdminStats {
+  season: { id: number; name: string; status: string } | null;
+  totalPlayers: number;
+  activePlayers: number;
+  newPlayersThisSeason: number;
+  returningPlayers: number;
+  leagues: { league: string; count: number }[];
+  pendingGames: number;
+  completedGames: number;
+  calibratingPlayers: number;
+}
+
+export default function AdminOverviewPage() {
+  const [stats, setStats] = useState<AdminStats | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    fetchStats();
+  }, []);
+
+  async function fetchStats() {
+    try {
+      const res = await fetch('/api/admin/stats');
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      setStats(data);
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  const statusColor: Record<string, string> = {
+    registration: 'bg-blue-900/30 text-blue-300 border-blue-700/50',
+    draft: 'bg-purple-900/30 text-purple-300 border-purple-700/50',
+    active: 'bg-green-900/30 text-green-300 border-green-700/50',
+    champions_league: 'bg-star/20 text-star border-star/40',
+    complete: 'bg-ink-700 text-ink-300 border-ink-600',
+  };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <Loader2 className="animate-spin text-gold" size={28} />
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-8 page-enter">
+      {/* Header */}
+      <div>
+        <h1 className="font-display text-2xl font-bold text-chalk">Admin Dashboard</h1>
+        <p className="text-ink-400 text-sm mt-1">League management overview</p>
+      </div>
+
+      {/* Season status banner */}
+      {stats?.season && (
+        <div className={`card p-5 border ${statusColor[stats.season.status] ?? 'border-ink-700'}`}>
+          <div className="flex items-center justify-between">
+            <div>
+              <div className="text-xs uppercase tracking-wider text-ink-400 mb-1">Current Season</div>
+              <div className="font-display text-xl font-bold text-chalk">
+                {stats.season.name}
+              </div>
+            </div>
+            <span className={`px-3 py-1 rounded-full text-xs font-semibold capitalize border ${statusColor[stats.season.status] ?? 'border-ink-600 text-ink-300'}`}>
+              {stats.season.status.replace(/_/g, ' ')}
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* Quick stats */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div className="card p-4">
+          <div className="flex items-center gap-2 text-ink-400 text-xs mb-2">
+            <Users size={13} /> Total Players
+          </div>
+          <div className="text-2xl font-bold text-chalk">{stats?.totalPlayers ?? 0}</div>
+        </div>
+        <div className="card p-4">
+          <div className="flex items-center gap-2 text-ink-400 text-xs mb-2">
+            <Users size={13} /> Active
+          </div>
+          <div className="text-2xl font-bold text-green-400">{stats?.activePlayers ?? 0}</div>
+        </div>
+        <div className="card p-4">
+          <div className="flex items-center gap-2 text-ink-400 text-xs mb-2">
+            <Swords size={13} /> Pending Games
+          </div>
+          <div className="text-2xl font-bold text-amber-400">{stats?.pendingGames ?? 0}</div>
+        </div>
+        <div className="card p-4">
+          <div className="flex items-center gap-2 text-ink-400 text-xs mb-2">
+            <CheckCircle size={13} /> Completed
+          </div>
+          <div className="text-2xl font-bold text-chalk">{stats?.completedGames ?? 0}</div>
+        </div>
+      </div>
+
+      {/* Season breakdown */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div className="card p-4">
+          <div className="text-xs text-ink-400 mb-3">Players This Season</div>
+          <div className="space-y-2">
+            <div className="flex justify-between text-sm">
+              <span className="text-ink-300">New players</span>
+              <span className="text-chalk font-semibold">{stats?.newPlayersThisSeason ?? 0}</span>
+            </div>
+            <div className="flex justify-between text-sm">
+              <span className="text-ink-300">Returning players</span>
+              <span className="text-chalk font-semibold">{stats?.returningPlayers ?? 0}</span>
+            </div>
+            <div className="flex justify-between text-sm">
+              <span className="text-ink-300">Need calibration</span>
+              <span className="text-amber-400 font-semibold">{stats?.calibratingPlayers ?? 0}</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="card p-4">
+          <div className="text-xs text-ink-400 mb-3">Leagues</div>
+          <div className="space-y-2">
+            {stats?.leagues?.map(l => (
+              <div key={l.league} className="flex justify-between text-sm">
+                <Link href={`/league/${l.league}`} className="text-ink-300 hover:text-gold transition-colors">
+                  {leagueName(l.league)}
+                </Link>
+                <span className="text-chalk font-semibold">{l.count} players</span>
+              </div>
+            ))}
+            {(!stats?.leagues || stats.leagues.length === 0) && (
+              <p className="text-ink-500 text-sm">No leagues formed yet</p>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Quick actions */}
+      <div>
+        <h2 className="font-display text-lg font-bold text-chalk mb-3">Quick Actions</h2>
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <Link href="/admin/draft" className="card-hover p-4 text-center space-y-2">
+            <Shuffle size={20} className="mx-auto text-gold" />
+            <div className="text-sm text-chalk font-medium">Run Draft</div>
+            <div className="text-xs text-ink-400">Assign players to leagues</div>
+          </Link>
+          <Link href="/admin/fixtures" className="card-hover p-4 text-center space-y-2">
+            <Calendar size={20} className="mx-auto text-gold" />
+            <div className="text-sm text-chalk font-medium">Generate Fixtures</div>
+            <div className="text-xs text-ink-400">League + SCEL brackets</div>
+          </Link>
+          <Link href="/admin/season" className="card-hover p-4 text-center space-y-2">
+            <PlayCircle size={20} className="mx-auto text-gold" />
+            <div className="text-sm text-chalk font-medium">Season Controls</div>
+            <div className="text-xs text-ink-400">Advance & manage season</div>
+          </Link>
+          <Link href="/admin/players" className="card-hover p-4 text-center space-y-2">
+            <Users size={20} className="mx-auto text-gold" />
+            <div className="text-sm text-chalk font-medium">Manage Players</div>
+            <div className="text-xs text-ink-400">Reactivate & manage</div>
+          </Link>
+        </div>
+      </div>
+    </div>
+  );
+}
 </file>
 
 <file path="src/app/api/casual/route.ts">
