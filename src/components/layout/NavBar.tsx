@@ -13,11 +13,11 @@ import {
     Swords,
     Users,
     X,
-    ChevronDown,
+    Trophy,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState } from "react";
 
 function leagueDisplayName(key: string): string {
   const match = key.match(/^league_(\d+)$/);
@@ -29,136 +29,62 @@ export function NavBar() {
   const pathname = usePathname();
   const router = useRouter();
   const [open, setOpen] = useState(false);
-  const [leaguesOpen, setLeaguesOpen] = useState(false);
-  const leagueDropdownRef = useRef<HTMLDivElement>(null);
   const [player, setPlayer] = useState<any>(null);
   const [unread, setUnread] = useState(0);
-  const [leagues, setLeagues] = useState<string[]>([]);
   const [showSignOutConfirm, setShowSignOutConfirm] = useState(false);
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => { setMounted(true); }, []);
 
-  // Close league dropdown on outside click
   useEffect(() => {
-    function handleClickOutside(e: MouseEvent) {
-      if (leagueDropdownRef.current && !leagueDropdownRef.current.contains(e.target as Node)) {
-        setLeaguesOpen(false);
-      }
-    }
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, []);
-
-  useEffect(() => {
-    supabase
-      .from("players")
-      .select("home_league")
-      .eq("is_active", true)
-      .neq("home_league", "unassigned")
-      .neq("home_league", "calibration")
-      .then(({ data }) => {
-        const unique = [...new Set((data ?? []).map((p: any) => p.home_league))]
-          .filter((l: string) => /^league_\d+$/.test(l))
-          .sort(
-            (a: string, b: string) =>
-              parseInt(a.replace("league_", "")) -
-              parseInt(b.replace("league_", "")),
-          );
-        setLeagues(unique as string[]);
-      });
-  }, []);
-
-  async function loadPlayer(email?: string) {
-    const playerId = localStorage.getItem("player_id");
-    if (playerId) {
-      const r = await fetch(`/api/players/${playerId}`);
-      const d = await r.json();
-      if (d.player) {
-        setPlayer(d.player);
-        fetch(`/api/notifications?player_id=${playerId}&unread=true`)
-          .then((r) => r.json())
-          .then((d) => setUnread(d.count ?? 0));
-        return;
-      }
-    }
-    if (email) {
-      const { data } = await supabase
-        .from("players")
-        .select(
-          "id, full_name, home_league, ss4_rating, rating_deviation, is_provisional",
-        )
-        .eq("email", email)
-        .single();
-      if (data) {
-        localStorage.setItem("player_id", data.id);
-        setPlayer(data);
-        fetch(`/api/notifications?player_id=${data.id}&unread=true`)
-          .then((r) => r.json())
-          .then((d) => setUnread(d.count ?? 0));
-      }
-    }
-  }
-  // Find the useEffect that fetches leagues (around line 35-50)
-  // REPLACE it with this:
-
-  useEffect(() => {
-      async function fetchLeagues() {
-        try {
-          const { data, error } = await supabase
-            .from("players")
-            .select("home_league")
-            .eq("is_active", true)
-            .neq("home_league", "unassigned")
-            .neq("home_league", "calibration");
-
-          if (error) {
-            console.error("[NavBar] League fetch error:", error.message);
-            return;
-          }
-
-          if (data && data.length > 0) {
-            const unique = [...new Set(data.map((p: any) => p.home_league))]
-              .filter((l: string) => /^league_\d+$/.test(l))
-              .sort((a: string, b: string) =>
-                parseInt(a.replace("league_", "")) - parseInt(b.replace("league_", ""))
-              );
-            
-            console.log("[NavBar] Leagues loaded:", unique);
-            setLeagues(unique);
-          } else {
-            // Fallback: try standings table
-            const { data: seasonData } = await supabase
-              .from("seasons")
-              .select("id")
-              .order("id", { ascending: false })
-              .limit(1)
-              .single();
-
-            if (seasonData) {
-              const { data: standingData } = await supabase
-                .from("standings")
-                .select("league")
-                .eq("season", seasonData.id);
-
-              if (standingData) {
-                const unique = [...new Set(standingData.map((s: any) => s.league))]
-                  .filter((l: string) => /^league_\d+$/.test(l))
-                  .sort((a: string, b: string) =>
-                    parseInt(a.replace("league_", "")) - parseInt(b.replace("league_", ""))
-                  );
-                console.log("[NavBar] Leagues from standings:", unique);
-                setLeagues(unique);
-              }
-            }
-          }
-        } catch (err) {
-          console.error("[NavBar] League fetch failed:", err);
+    async function loadPlayer(email?: string) {
+      const playerId = localStorage.getItem("player_id");
+      if (playerId) {
+        const r = await fetch(`/api/players/${playerId}`);
+        const d = await r.json();
+        if (d.player) {
+          setPlayer(d.player);
+          fetch(`/api/notifications?player_id=${playerId}&unread=true`)
+            .then((r) => r.json())
+            .then((d) => setUnread(d.count ?? 0));
+          return;
         }
       }
+      if (email) {
+        const { data } = await supabase
+          .from("players")
+          .select(
+            "id, full_name, home_league, ss4_rating, rating_deviation, is_provisional",
+          )
+          .eq("email", email)
+          .single();
+        if (data) {
+          localStorage.setItem("player_id", data.id);
+          setPlayer(data);
+          fetch(`/api/notifications?player_id=${data.id}&unread=true`)
+            .then((r) => r.json())
+            .then((d) => setUnread(d.count ?? 0));
+        }
+      }
+    }
 
-      fetchLeagues();
-    }, []);
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      if (session?.user) loadPlayer(session.user.email);
+    });
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (session?.user) {
+        loadPlayer(session.user.email);
+      } else {
+        setPlayer(null);
+        setUnread(0);
+      }
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
 
   const handleSignOut = async () => {
     setShowSignOutConfirm(false);
@@ -174,18 +100,17 @@ export function NavBar() {
     pathname === href || (href !== "/" && pathname.startsWith(href));
 
   const staticLinks = [
-    { href: "/", label: "Home", icon: <Home size={13} /> },
     { href: "/dashboard", label: "Dashboard", icon: <LayoutDashboard size={13} /> },
     { href: "/casual", label: "Casual Play", icon: <Swords size={13} /> },
+    { href: "/leagues", label: "Leagues", icon: <Trophy size={13} /> },
     { href: "/champions-league", label: "Champions League", icon: <Crown size={13} /> },
     { href: "/players", label: "Players", icon: <Users size={13} /> },
     { href: "/hall-of-champions", label: "Hall of Fame", icon: <Star size={13} /> },
   ];
 
-  // Hide Home link when signed in
-  const allLinks = [
-    ...(player ? [] : [staticLinks[0]]),
-    ...staticLinks.slice(1),
+  const allLinks = player ? staticLinks : [
+    { href: "/", label: "Home", icon: <Home size={13} /> },
+    ...staticLinks,
   ];
 
   const playerLeaguePill =
@@ -217,54 +142,6 @@ export function NavBar() {
               {l.label}
             </Link>
           ))}
-
-          {/* Leagues Dropdown */}
-          {leagues.length > 0 && (
-            <div className="relative" ref={leagueDropdownRef}>
-              <button
-                onClick={() => setLeaguesOpen(!leaguesOpen)}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm whitespace-nowrap transition-colors ${
-                  leaguesOpen || pathname.startsWith('/league/')
-                    ? 'bg-ink-700 text-chalk'
-                    : 'text-ink-300 hover:text-chalk hover:bg-ink-800'
-                }`}
-              >
-                <Swords size={13} />
-                Leagues
-                <ChevronDown size={11} className={`transition-transform ${leaguesOpen ? 'rotate-180' : ''}`} />
-              </button>
-
-              {leaguesOpen && (
-                <div className="absolute top-full left-0 mt-1 bg-ink-800 border border-ink-700 rounded-xl shadow-2xl overflow-hidden z-50 w-44 max-h-64 overflow-y-auto">
-                  {leagues.map((l) => (
-                    <Link
-                      key={l}
-                      href={`/league/${l}`}
-                      onClick={() => setLeaguesOpen(false)}
-                      className={`flex items-center gap-2 px-4 py-2.5 text-sm transition-colors hover:bg-ink-700 ${
-                        pathname === `/league/${l}` ? 'bg-ink-700 text-orange-400' : 'text-ink-300'
-                      }`}
-                    >
-                      <span className={`w-2 h-2 rounded-full ${
-                        l === 'league_1' ? 'bg-blue-500' : l === 'league_2' ? 'bg-orange-500' : 'bg-ink-500'
-                      }`} />
-                      {leagueDisplayName(l)}
-                    </Link>
-                  ))}
-                  <div className="border-t border-ink-700">
-                    <Link
-                      href="/league/scel"
-                      onClick={() => setLeaguesOpen(false)}
-                      className="flex items-center gap-2 px-4 py-2.5 text-sm text-yellow-400 hover:bg-ink-700 transition-colors"
-                    >
-                      <Swords size={12} />
-                      SCEL
-                    </Link>
-                  </div>
-                </div>
-              )}
-            </div>
-          )}
         </div>
 
         {/* Right side */}
@@ -346,34 +223,6 @@ export function NavBar() {
               {l.label}
             </Link>
           ))}
-          
-          {/* Mobile Leagues */}
-          {leagues.length > 0 && (
-            <>
-              <div className="text-xs text-ink-500 uppercase tracking-wider px-3 pt-3 pb-1">Leagues</div>
-              {leagues.map((l) => (
-                <Link
-                  key={l}
-                  href={`/league/${l}`}
-                  onClick={() => setOpen(false)}
-                  className="flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm text-ink-300"
-                >
-                  <span className={`w-2 h-2 rounded-full ${
-                    l === 'league_1' ? 'bg-blue-500' : l === 'league_2' ? 'bg-orange-500' : 'bg-ink-500'
-                  }`} />
-                  {leagueDisplayName(l)}
-                </Link>
-              ))}
-              <Link
-                href="/league/scel"
-                onClick={() => setOpen(false)}
-                className="flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm text-yellow-400"
-              >
-                <Swords size={13} />
-                SCEL
-              </Link>
-            </>
-          )}
 
           {player ? (
             <button
