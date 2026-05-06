@@ -1,3 +1,4 @@
+export const revalidate = 0; // Disable caching for this page
 import { createServerClient } from "@/lib/supabase";
 import { formatRating, leagueName } from "@/lib/utils";
 import Link from "next/link";
