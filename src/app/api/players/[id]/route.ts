@@ -18,7 +18,7 @@ export async function GET(_req: NextRequest, { params }: { params: Promise<{ id:
       black_player:players!games_black_player_id_fkey(id, full_name)
     `).or(`white_player_id.eq.${id},black_player_id.eq.${id}`)
       .neq('result', '*')
-      .not('league', 'eq', 'calibration')
+      .or('league.neq.calibration,league.is.null')
       .order('played_at', { ascending: false })
       .limit(50),
     supabase.from('rating_history').select('rating, rating_deviation, change, recorded_at, season').eq('player_id', id).order('recorded_at', { ascending: true }).limit(100),
