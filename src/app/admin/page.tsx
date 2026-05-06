@@ -3,8 +3,8 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { 
-  Users, Trophy, Swords, Calendar, CheckCircle, Clock,
-  ArrowRight, Loader2, AlertTriangle, Shuffle, PlayCircle
+  Users, CheckCircle,
+  Loader2, Shuffle, PlayCircle, Calendar, Swords
 } from 'lucide-react';
 import { leagueName } from '@/lib/utils';
 

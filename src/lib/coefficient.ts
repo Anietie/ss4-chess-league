@@ -34,22 +34,3 @@ export function calculateLeagueCoefficients(results: CLPlayerResult[]): LeagueCo
 
   return [...map.values()].sort((a, b) => b.coefficient_score - a.coefficient_score);
 }
-
-export function processPromotionRelegation(
-  premier: { player_id: string; position: number }[],
-  development: { player_id: string; position: number }[],
-  league: string,
-  playoffWinnerId?: string
-) {
-  const ps = [...premier].sort((a, b) => a.position - b.position);
-  const ds = [...development].sort((a, b) => a.position - b.position);
-
-  const relegated = ps.slice(-2)
-    .filter(p => p.player_id !== playoffWinnerId)
-    .map(p => ({ player_id: p.player_id, from_tier: 'premier', to_tier: 'development', league }));
-
-  const promoted = ds.slice(0, 2)
-    .map(p => ({ player_id: p.player_id, from_tier: 'development', to_tier: 'premier', league }));
-
-  return { promoted, relegated };
-}

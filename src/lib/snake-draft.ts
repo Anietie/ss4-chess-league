@@ -63,9 +63,10 @@ export function leagueDisplayName(key: string): string {
     league_1: 'League 1', league_2: 'League 2', league_3: 'League 3',
     league_4: 'League 4', league_5: 'League 5', league_6: 'League 6',
     league_7: 'League 7', league_8: 'League 8',
-    champions_cup: 'Champions Cup',
+    champions_league: 'Champions League',
+    scel: 'SCEL',
+    open_cup: 'SCEL', // Legacy
     continental_shield: 'Continental Shield',
-    open_cup: 'Open Cup',
     blitz: 'Blitz Invitational',
     newcomer_shield: 'Newcomer Shield',
     casual: 'Casual',
