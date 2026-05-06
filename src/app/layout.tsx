@@ -36,10 +36,8 @@ export async function Footer() {
     <footer className="border-t border-ink-700 bg-ink-900 mt-16">
       <div className="max-w-7xl mx-auto px-4 py-6 flex flex-col sm:flex-row items-center justify-between gap-2 text-xs text-ink-500">
         <div className="flex items-center gap-2">
-          <span className="text-gold">♟</span>
-          <span className="font-display font-bold text-ink-300">
-            SS4 Chess League
-          </span>
+          <img src="/logo.png" alt="SS4" className="h-5 w-auto" />
+          <span className="font-display font-bold text-ink-300">SS4 Chess League</span>
         </div>
         <div className="text-center">The Board Remembers</div>
         <div className="flex items-center gap-4">

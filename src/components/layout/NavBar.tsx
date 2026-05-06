@@ -160,10 +160,11 @@ export function NavBar() {
     <nav className="sticky top-0 z-50 bg-ink-900/90 backdrop-blur-sm border-b border-ink-700">
       <div className="max-w-7xl mx-auto px-4 h-14 flex items-center justify-between gap-4">
         <Link href="/" className="flex items-center gap-2 flex-shrink-0">
-          <span className="text-gold text-xl">♟</span>
-          <span className="font-display font-bold text-chalk hidden sm:block">
-            SS4 Chess
-          </span>
+          <img 
+            src="/logo.png" 
+            alt="SS4 Chess League" 
+            className="h-7 w-auto" 
+          />
         </Link>
 
         <div className="hidden lg:flex items-center gap-0.5 overflow-x-auto no-scrollbar">
