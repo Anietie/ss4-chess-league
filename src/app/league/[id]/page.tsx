@@ -4,13 +4,7 @@ import { leagueName, leaguePillClass } from "@/lib/utils";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
-const NAMED = [
-  "champions_league",
-  "scel",
-  "continental_shield",
-  "blitz",
-  "newcomer_shield",
-];
+const NAMED = ["champions_league", "scel", "continental_shield", "blitz", "newcomer_shield"];
 
 function isValidKey(key: string) {
   return /^league_\d+$/.test(key) || NAMED.includes(key);
@@ -35,7 +29,6 @@ async function getData(league: string, season: number) {
     { data: upcoming },
     { data: done },
     { data: seasons },
-    { data: players },
   ] = await Promise.all([
     supabase
       .from("standings")
@@ -67,43 +60,34 @@ async function getData(league: string, season: number) {
       .from("seasons")
       .select("id,name,status")
       .order("id", { ascending: false }),
-    supabase
-      .from("players")
-      .select("id,full_name,ss4_rating,rating_deviation")
-      .eq("home_league", league)
-      .eq("is_active", true)
-      .order("ss4_rating", { ascending: false }),
   ]);
-  return { standings, upcoming, done, seasons, players };
+  return { standings, upcoming, done, seasons };
 }
 
 export default async function LeaguePage({
   params,
   searchParams,
 }: {
-  params: { id: string };
-  searchParams: { season?: string };
+  params: Promise<{ id: string }>;
+  searchParams: Promise<{ season?: string }>;
 }) {
-  if (!isValidKey(params.id)) notFound();
+  const { id } = await params;
+  const sp = await searchParams;
+  
+  if (!isValidKey(id)) notFound();
 
   const activeSeason = await getActiveSeason();
-  const season = searchParams.season
-    ? Number(searchParams.season)
-    : activeSeason;
-  const { standings, upcoming, done, seasons, players } = await getData(
-    params.id,
-    season,
-  );
-  const name = leagueName(params.id);
+  const season = sp.season ? Number(sp.season) : activeSeason;
+  const { standings, upcoming, done, seasons } = await getData(id, season);
+  const name = leagueName(id);
   const hasStandings = (standings?.length ?? 0) > 0;
-  const hasPlayers = (players?.length ?? 0) > 0;
 
   return (
     <div className="max-w-5xl mx-auto px-4 py-10 space-y-10">
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div className="flex items-center gap-3">
-          <span className={leaguePillClass(params.id)}>{name}</span>
+          <span className={leaguePillClass(id)}>{name}</span>
           <h1 className="font-display text-3xl font-bold text-chalk">{name}</h1>
         </div>
         {(seasons?.length ?? 0) > 1 && (
@@ -112,7 +96,7 @@ export default async function LeaguePage({
             {seasons!.map((s) => (
               <Link
                 key={s.id}
-                href={`/league/${params.id}?season=${s.id}`}
+                href={`/league/${id}?season=${s.id}`}
                 className={`btn btn-sm ${season === s.id ? "btn-gold" : "btn-ghost"}`}
               >
                 {s.name ?? `Season ${s.id}`}
@@ -122,83 +106,34 @@ export default async function LeaguePage({
         )}
       </div>
 
-      {/* No players at all */}
-      {!hasPlayers && !hasStandings && (
+      {/* No standings yet */}
+      {!hasStandings && (
         <div className="card p-12 text-center border-dashed border-ink-600">
           <div className="text-4xl mb-4">🏗️</div>
           <div className="font-display text-xl font-bold text-chalk mb-2">
             {name} — Awaiting Draft
           </div>
           <p className="text-ink-400 text-sm">
-            Players will be assigned here after the draft.
+            Players will be assigned here after the draft. Standings and fixtures will appear once the season begins.
           </p>
-          <Link href="/register" className="btn-gold mt-6 inline-flex">
-            Register
-          </Link>
         </div>
       )}
 
-      {/* Players assigned but no standings yet */}
-      {hasPlayers && !hasStandings && (
-        <div className="card p-6 border-dashed border-ink-600">
-          <div className="text-center mb-6">
-            <div className="text-3xl mb-2">📋</div>
-            <div className="font-display text-lg font-bold text-chalk">
-              Draft Complete — Season Starting Soon
-            </div>
-            {players && players.length > 0 ? (
-              <>
-                <p className="text-ink-400 text-sm mt-1">
-                  {players.length} players assigned. Fixtures will appear once the season begins.
-                </p>
-                <div className="card divide-y divide-ink-700/50 max-h-96 overflow-y-auto mt-4">
-                  {players.map((p, i) => (
-                    <div key={p.id} className="flex items-center gap-3 px-4 py-3">
-                      <span className="text-xs text-ink-500 w-6">{i + 1}</span>
-                      <Link
-                        href={`/profile/${p.id}`}
-                        className="flex-1 text-sm text-chalk hover:text-gold transition-colors"
-                      >
-                        {p.full_name}
-                      </Link>
-                      <span className="font-mono text-sm text-gold">
-                        {Math.round(p.ss4_rating)}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </>
-            ) : (
-              <p className="text-ink-400 text-sm mt-1">No players assigned yet.</p>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Live season */}
+      {/* Standings */}
       {hasStandings && (
         <>
-          {/* Standings */}
           <section>
-            <h2 className="font-display text-lg font-bold text-chalk mb-3 flex items-center gap-2">
-              Standings
-            </h2>
+            <h2 className="font-display text-lg font-bold text-chalk mb-3">Standings</h2>
             {standings?.length ? (
               <StandingsTable rows={standings} />
             ) : (
-              <div className="card p-8 text-center text-ink-400 text-sm">
-                No standings data yet.
-              </div>
+              <div className="card p-8 text-center text-ink-400 text-sm">No standings data yet.</div>
             )}
           </section>
 
-          {/* Fixtures + Results */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-            {/* Upcoming Fixtures */}
             <section>
-              <h2 className="font-display text-lg font-bold text-chalk mb-3">
-                Upcoming Fixtures
-              </h2>
+              <h2 className="font-display text-lg font-bold text-chalk mb-3">Upcoming Fixtures</h2>
               <div className="card divide-y divide-ink-700">
                 {upcoming?.length ? (
                   upcoming.map((g) => (
@@ -209,28 +144,19 @@ export default async function LeaguePage({
                           <span className="text-ink-500">vs</span>{" "}
                           {(g.black_player as any)?.full_name}
                         </span>
-                        <span className="text-xs text-ink-500 ml-2">
-                          {g.round ? `R${g.round}` : g.competition_phase}
-                        </span>
+                        <span className="text-xs text-ink-500">R{g.round}</span>
                       </div>
-                      <div className="text-xs text-ink-500 mt-0.5">
-                        {g.scheduled_date} · {g.time_control}
-                      </div>
+                      <div className="text-xs text-ink-500 mt-0.5">{g.scheduled_date} · {g.time_control}</div>
                     </div>
                   ))
                 ) : (
-                  <div className="px-4 py-8 text-center text-ink-400 text-sm">
-                    No pending fixtures.
-                  </div>
+                  <div className="px-4 py-8 text-center text-ink-400 text-sm">No pending fixtures.</div>
                 )}
               </div>
             </section>
 
-            {/* Recent Results */}
             <section>
-              <h2 className="font-display text-lg font-bold text-chalk mb-3">
-                Recent Results
-              </h2>
+              <h2 className="font-display text-lg font-bold text-chalk mb-3">Recent Results</h2>
               <div className="card divide-y divide-ink-700">
                 {done?.length ? (
                   done.map((g) => (
@@ -243,15 +169,11 @@ export default async function LeaguePage({
                         {(g.white_player as any)?.full_name} vs{" "}
                         {(g.black_player as any)?.full_name}
                       </span>
-                      <span className="text-sm font-mono font-bold text-gold ml-3">
-                        {g.result}
-                      </span>
+                      <span className="text-sm font-mono font-bold text-orange-500 ml-3">{g.result}</span>
                     </Link>
                   ))
                 ) : (
-                  <div className="px-4 py-8 text-center text-ink-400 text-sm">
-                    No results yet.
-                  </div>
+                  <div className="px-4 py-8 text-center text-ink-400 text-sm">No results yet.</div>
                 )}
               </div>
             </section>

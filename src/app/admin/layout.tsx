@@ -6,17 +6,18 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { 
   LayoutDashboard, Shuffle, CalendarDays, PlayCircle, 
-  Users, LogOut, Shield, Loader2 
+  Users, LogOut, Shield, Loader2, CalendarCheck2
 } from 'lucide-react';
 
 
 const NAV_ITEMS = [
   { href: '/admin', label: 'Overview', icon: <LayoutDashboard size={16} /> },
+  { href: '/admin/registration', label: 'Registration', icon: <CalendarCheck2 size={16} /> },
   { href: '/admin/draft', label: 'Draft', icon: <Shuffle size={16} /> },
   { href: '/admin/fixtures', label: 'Fixtures & SCEL', icon: <CalendarDays size={16} /> },
   { href: '/admin/season', label: 'Season Controls', icon: <PlayCircle size={16} /> },
   { href: '/admin/players', label: 'Players', icon: <Users size={16} /> },
-  { href: '/admin/anti-cheat', label: 'Anti-Cheat', icon: <Shield size={16} /> }, // New
+  { href: '/admin/anti-cheat', label: 'Anti-Cheat', icon: <Shield size={16} /> },
 ];
 
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
@@ -62,7 +63,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
-        <Loader2 className="animate-spin text-gold" size={32} />
+        <Loader2 className="animate-spin text-orange-500" size={32} />
       </div>
     );
   }
@@ -76,7 +77,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
         <div className="max-w-7xl mx-auto px-4 h-14 flex items-center justify-between">
           <div className="flex items-center gap-4">
             <Link href="/admin" className="flex items-center gap-2">
-              <Shield size={18} className="text-gold" />
+              <Shield size={18} className="text-orange-500" />
               <span className="font-display font-bold text-chalk">SS4 Admin</span>
             </Link>
             <span className="text-xs text-ink-500 hidden sm:block">|</span>
@@ -102,7 +103,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
                 href={item.href}
                 className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors ${
                   pathname === item.href
-                    ? 'bg-gold/10 text-gold border border-gold/20'
+                    ? 'bg-orange-500/10 text-orange-400 border border-orange-500/20'
                     : 'text-ink-300 hover:text-chalk hover:bg-ink-800'
                 }`}
               >
@@ -121,7 +122,7 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
                 key={item.href}
                 href={item.href}
                 className={`flex flex-col items-center gap-1 px-4 py-2.5 text-xs whitespace-nowrap transition-colors ${
-                  pathname === item.href ? 'text-gold' : 'text-ink-400'
+                  pathname === item.href ? 'text-orange-400' : 'text-ink-400'
                 }`}
               >
                 {item.icon}
