@@ -2,7 +2,7 @@ import { BadgeWall } from "@/components/profile/BadgeWall";
 import { RatingChart } from "@/components/profile/RatingChart";
 import { createServerClient } from "@/lib/supabase";
 import { formatRating } from "@/lib/utils";
-import { GraduationCap, BookOpen, Building2 } from "lucide-react";
+import { GraduationCap, BookOpen } from "lucide-react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
@@ -100,38 +100,25 @@ export default async function ProfilePage({
                 {player.home_league?.replace("_", " ").toUpperCase() || "Unassigned"}
               </span>
               {player.joining_season === 1 && (
-                <span className="text-xs px-2 py-0.5 rounded-full bg-gold/20 text-gold border border-gold/30">⭐ Pioneer</span>
+                <span className="text-xs px-2 py-0.5 rounded-full bg-orange-500/20 text-orange-400 border border-orange-500/30">⭐ Pioneer</span>
               )}
             </div>
             <h1 className="font-display text-3xl font-bold text-chalk">
               {player.full_name}
             </h1>
             
-            {/* School, Category & Department */}
-            {(player.school || player.institution_category || player.department) && (
+            {/* School & Department */}
+            {(player.school || player.department) && (
               <div className="flex flex-wrap items-center gap-3 mt-3">
-                {player.institution_category && (
-                  <span className={`text-xs px-2 py-1 rounded-full border ${
-                    player.institution_category === 'university' 
-                      ? 'bg-blue-900/30 text-blue-300 border-blue-700/50' 
-                      : player.institution_category === 'polytechnic'
-                      ? 'bg-green-900/30 text-green-300 border-green-700/50'
-                      : 'bg-purple-900/30 text-purple-300 border-purple-700/50'
-                  }`}>
-                    <Building2 size={10} className="inline mr-1" />
-                    {player.institution_category === 'university' ? 'University' : 
-                     player.institution_category === 'polytechnic' ? 'Polytechnic' : 'College of Education'}
-                  </span>
-                )}
                 {player.school && (
                   <div className="flex items-center gap-1.5 text-sm text-ink-300 bg-ink-800/50 px-3 py-1.5 rounded-lg border border-ink-700">
-                    <GraduationCap size={14} className="text-gold" />
+                    <GraduationCap size={14} className="text-orange-500" />
                     <span>{player.school}</span>
                   </div>
                 )}
                 {player.department && (
                   <div className="flex items-center gap-1.5 text-sm text-ink-300 bg-ink-800/50 px-3 py-1.5 rounded-lg border border-ink-700">
-                    <BookOpen size={14} className="text-gold" />
+                    <BookOpen size={14} className="text-orange-500" />
                     <span>{player.department}</span>
                   </div>
                 )}
@@ -145,7 +132,7 @@ export default async function ProfilePage({
                   href={`https://chess.com/member/${player.chess_com_username}`}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="text-sm text-ink-400 hover:text-gold transition-colors"
+                  className="text-sm text-ink-400 hover:text-orange-400 transition-colors"
                 >
                   ♟ @{player.chess_com_username}
                 </a>
@@ -155,7 +142,7 @@ export default async function ProfilePage({
                   href={`https://lichess.org/@/${player.lichess_username}`}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="text-sm text-ink-400 hover:text-gold transition-colors"
+                  className="text-sm text-ink-400 hover:text-orange-400 transition-colors"
                 >
                   ♞ @{player.lichess_username}
                 </a>
@@ -165,7 +152,7 @@ export default async function ProfilePage({
           
           {/* Rating Display */}
           <div className="text-right">
-            <div className="font-mono text-4xl font-bold text-gold">
+            <div className="font-mono text-4xl font-bold text-orange-500">
               {formatRating(player.ss4_rating, player.rating_deviation)}
             </div>
             <div className="text-xs text-ink-400 mt-1">
@@ -195,7 +182,7 @@ export default async function ProfilePage({
             <div className="text-xs text-ink-400">Losses</div>
           </div>
           <div className="text-center">
-            <div className="text-2xl font-bold text-gold">{winRate}%</div>
+            <div className="text-2xl font-bold text-orange-500">{winRate}%</div>
             <div className="text-xs text-ink-400">Win Rate</div>
           </div>
         </div>
@@ -227,14 +214,14 @@ export default async function ProfilePage({
       {(schoolMates.length > 0 || deptMates.length > 0) && (
         <section>
           <h2 className="font-display text-lg font-bold text-chalk mb-3 flex items-center gap-2">
-            <GraduationCap size={18} className="text-gold" />
+            <GraduationCap size={18} className="text-orange-500" />
             Campus Network
           </h2>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {schoolMates.length > 0 && (
               <div className="card p-4">
                 <h3 className="text-sm font-bold text-ink-300 mb-3 flex items-center gap-2">
-                  <GraduationCap size={13} className="text-gold" />
+                  <GraduationCap size={13} className="text-orange-500" />
                   Same School — {player.school}
                 </h3>
                 <div className="space-y-2">
@@ -250,7 +237,7 @@ export default async function ProfilePage({
                           <div className="text-xs text-ink-500">{mate.department}</div>
                         )}
                       </div>
-                      <span className="text-xs font-mono text-gold">
+                      <span className="text-xs font-mono text-orange-500">
                         {formatRating(mate.ss4_rating, mate.rating_deviation)}
                       </span>
                     </Link>
@@ -261,7 +248,7 @@ export default async function ProfilePage({
             {deptMates.length > 0 && (
               <div className="card p-4">
                 <h3 className="text-sm font-bold text-ink-300 mb-3 flex items-center gap-2">
-                  <BookOpen size={13} className="text-gold" />
+                  <BookOpen size={13} className="text-orange-500" />
                   Same Department — {player.department}
                 </h3>
                 <div className="space-y-2">
@@ -274,7 +261,7 @@ export default async function ProfilePage({
                       <div>
                         <div className="text-sm text-chalk">{mate.full_name}</div>
                       </div>
-                      <span className="text-xs font-mono text-gold">
+                      <span className="text-xs font-mono text-orange-500">
                         {formatRating(mate.ss4_rating, mate.rating_deviation)}
                       </span>
                     </Link>
@@ -308,31 +295,18 @@ export default async function ProfilePage({
               </thead>
               <tbody>
                 {standings.map((s: any) => (
-                  <tr
-                    key={`${s.season}-${s.league}`}
-                    className="border-b border-ink-700/50"
-                  >
+                  <tr key={`${s.season}-${s.league}`} className="border-b border-ink-700/50">
                     <td className="px-4 py-3 text-chalk">
                       {s.season?.name ?? `Season ${s.season}`}
                     </td>
                     <td className="px-4 py-3 text-ink-300 capitalize">
                       {s.league?.replace("_", " ")}
                     </td>
-                    <td className="px-4 py-3 text-center text-ink-400">
-                      {s.games_played}
-                    </td>
-                    <td className="px-4 py-3 text-center text-green-400">
-                      {s.wins}
-                    </td>
-                    <td className="px-4 py-3 text-center text-ink-300">
-                      {s.draws}
-                    </td>
-                    <td className="px-4 py-3 text-center text-red-400">
-                      {s.losses}
-                    </td>
-                    <td className="px-4 py-3 text-center font-bold text-gold">
-                      {s.points}
-                    </td>
+                    <td className="px-4 py-3 text-center text-ink-400">{s.games_played}</td>
+                    <td className="px-4 py-3 text-center text-green-400">{s.wins}</td>
+                    <td className="px-4 py-3 text-center text-ink-300">{s.draws}</td>
+                    <td className="px-4 py-3 text-center text-red-400">{s.losses}</td>
+                    <td className="px-4 py-3 text-center font-bold text-orange-500">{s.points}</td>
                     <td className="px-4 py-3 text-right text-ink-400">
                       {s.position ? `#${s.position}` : '—'}
                     </td>
@@ -352,22 +326,12 @@ export default async function ProfilePage({
           </h2>
           <div className="grid md:grid-cols-2 gap-4">
             <div className="card p-4">
-              <h3 className="text-sm font-bold text-ink-300 mb-3 border-b border-ink-700 pb-2">
-                As White ♔
-              </h3>
+              <h3 className="text-sm font-bold text-ink-300 mb-3 border-b border-ink-700 pb-2">As White ♔</h3>
               {repertoire.white?.length > 0 ? (
                 <div className="space-y-3">
                   {repertoire.white.map((op: any) => (
-                    <div
-                      key={op.moves}
-                      className="flex justify-between items-center text-sm"
-                    >
-                      <div
-                        className="font-mono text-xs text-chalk truncate mr-2"
-                        title={op.moves}
-                      >
-                        {op.moves}
-                      </div>
+                    <div key={op.moves} className="flex justify-between items-center text-sm">
+                      <div className="font-mono text-xs text-chalk truncate mr-2" title={op.moves}>{op.moves}</div>
                       <div className="flex gap-2 text-xs tabular-nums">
                         <span className="text-ink-400 w-6 text-right">{op.count}G</span>
                         <span className="text-green-400 w-6 text-right">{op.wins}W</span>
@@ -381,24 +345,13 @@ export default async function ProfilePage({
                 <div className="text-xs text-ink-500 text-center py-4">No data yet</div>
               )}
             </div>
-
             <div className="card p-4">
-              <h3 className="text-sm font-bold text-ink-300 mb-3 border-b border-ink-700 pb-2">
-                As Black ♚
-              </h3>
+              <h3 className="text-sm font-bold text-ink-300 mb-3 border-b border-ink-700 pb-2">As Black ♚</h3>
               {repertoire.black?.length > 0 ? (
                 <div className="space-y-3">
                   {repertoire.black.map((op: any) => (
-                    <div
-                      key={op.moves}
-                      className="flex justify-between items-center text-sm"
-                    >
-                      <div
-                        className="font-mono text-xs text-chalk truncate mr-2"
-                        title={op.moves}
-                      >
-                        {op.moves}
-                      </div>
+                    <div key={op.moves} className="flex justify-between items-center text-sm">
+                      <div className="font-mono text-xs text-chalk truncate mr-2" title={op.moves}>{op.moves}</div>
                       <div className="flex gap-2 text-xs tabular-nums">
                         <span className="text-ink-400 w-6 text-right">{op.count}G</span>
                         <span className="text-green-400 w-6 text-right">{op.wins}W</span>
@@ -419,10 +372,8 @@ export default async function ProfilePage({
       {/* Recent Games */}
       <section>
         <div className="flex items-center justify-between mb-3">
-          <h2 className="font-display text-lg font-bold text-chalk">
-            Recent Games
-          </h2>
-          <Link href={`/games/history?player=${id}`} className="text-xs text-ink-400 hover:text-gold transition-colors">
+          <h2 className="font-display text-lg font-bold text-chalk">Recent Games</h2>
+          <Link href={`/games/history?player=${id}`} className="text-xs text-ink-400 hover:text-orange-400 transition-colors">
             View all →
           </Link>
         </div>
@@ -430,20 +381,11 @@ export default async function ProfilePage({
           {recentGames?.slice(0, 15).map((g: any) => {
             const isWhite = g.white_player?.id === id;
             const opp = isWhite ? g.black_player : g.white_player;
-            const myResult =
-              g.result === '0.5-0.5'
-                ? 'draw'
-                : (isWhite ? g.result === '1-0' : g.result === '0-1')
-                  ? 'win'
-                  : 'loss';
+            const myResult = g.result === '0.5-0.5' ? 'draw' : (isWhite ? g.result === '1-0' : g.result === '0-1') ? 'win' : 'loss';
             const colourMap = { win: 'text-green-400', draw: 'text-chalk-700', loss: 'text-red-400' };
             const ratingBefore = isWhite ? g.white_rating_before : g.black_rating_before;
             const ratingAfter  = isWhite ? g.white_rating_after  : g.black_rating_after;
             const change = ratingAfter && ratingBefore ? Math.round(ratingAfter - ratingBefore) : null;
-            const isCasual = g.league === 'casual';
-            const leagueLabel = isCasual
-              ? (g.is_rated ? 'Casual Rated' : 'Casual Unrated')
-              : g.league?.replace(/_/g, ' ');
             return (
               <div key={g.id} className="flex items-center justify-between px-4 py-3 hover:bg-ink-700/50 transition-colors">
                 <div className="flex-1 min-w-0">
@@ -452,37 +394,24 @@ export default async function ProfilePage({
                     <span className="text-ink-500 text-xs ml-1.5">({isWhite ? 'White' : 'Black'})</span>
                   </div>
                   <div className="flex items-center gap-2 mt-0.5">
-                    <span className="text-xs text-ink-400 capitalize">{leagueLabel}</span>
+                    <span className="text-xs text-ink-400 capitalize">{g.league?.replace(/_/g, ' ')}</span>
                     {g.played_at && <span className="text-xs text-ink-600">· {g.played_at.slice(0, 10)}</span>}
-                    {g.time_control && <span className="text-xs text-ink-600">· {g.time_control}</span>}
                   </div>
                 </div>
                 <div className="flex items-center gap-3 flex-shrink-0">
                   <div className="text-right">
-                    <span className={`text-sm font-bold capitalize ${colourMap[myResult as keyof typeof colourMap]}`}>
-                      {myResult}
-                    </span>
+                    <span className={`text-sm font-bold capitalize ${colourMap[myResult as keyof typeof colourMap]}`}>{myResult}</span>
                     {change !== null && (
-                      <div className={`text-xs ${change >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                        {change >= 0 ? '+' : ''}{change}
-                      </div>
+                      <div className={`text-xs ${change >= 0 ? 'text-green-400' : 'text-red-400'}`}>{change >= 0 ? '+' : ''}{change}</div>
                     )}
                   </div>
-                  <Link
-                    href={`/game/${g.id}/review`}
-                    className="text-xs text-ink-500 hover:text-gold transition-colors px-2 py-1 rounded border border-ink-700 hover:border-gold/40"
-                    title="Review game"
-                  >
-                    Review
-                  </Link>
+                  <Link href={`/game/${g.id}/review`} className="text-xs text-ink-500 hover:text-orange-400 transition-colors px-2 py-1 rounded border border-ink-700 hover:border-orange-500/40">Review</Link>
                 </div>
               </div>
             );
           })}
           {!recentGames?.length && (
-            <div className="px-4 py-8 text-center text-ink-400 text-sm">
-              No games played yet.
-            </div>
+            <div className="px-4 py-8 text-center text-ink-400 text-sm">No games played yet.</div>
           )}
         </div>
       </section>
