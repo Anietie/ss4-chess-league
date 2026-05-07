@@ -24,9 +24,7 @@ export async function middleware(request: NextRequest) {
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
       cookies: {
-        getAll() {
-          return request.cookies.getAll();
-        },
+        getAll() { return request.cookies.getAll(); },
         setAll(cookiesToSet) {
           cookiesToSet.forEach(({ name, value, options }) => {
             request.cookies.set(name, value);
@@ -40,24 +38,18 @@ export async function middleware(request: NextRequest) {
   const { data: { user } } = await supabase.auth.getUser();
 
   // Public pages that don't require auth
-  const publicPaths = ['/', '/players', '/champions-league', '/hall-of-champions', '/register'];
-  const isPublicPage = publicPaths.includes(pathname) || pathname.startsWith('/game/') || pathname.startsWith('/league/') || pathname.startsWith('/profile/') || pathname.startsWith('/casual/');
-  
-  // Auth pages
-  const isAuthPage = pathname.startsWith('/auth/login') || pathname.startsWith('/auth/callback');
+  const publicPaths = ['/', '/players', '/champions-league', '/hall-of-champions', '/register', '/auth/reset-password'];
+  const isPublicPage = publicPaths.includes(pathname) || 
+    pathname.startsWith('/game/') || 
+    pathname.startsWith('/league/') || 
+    pathname.startsWith('/profile/') || 
+    pathname.startsWith('/casual/');
 
-  // If user is signed in and on home page, redirect to dashboard
   if (user && pathname === '/') {
     return NextResponse.redirect(new URL('/dashboard', request.url));
   }
 
-  // If user is signed in and on auth page, redirect to dashboard
-  if (user && isAuthPage) {
-    return NextResponse.redirect(new URL('/dashboard', request.url));
-  }
-
-  // If user is NOT signed in and trying to access protected page
-  if (!user && !isPublicPage && !isAuthPage) {
+  if (!user && !isPublicPage && !pathname.startsWith('/auth/login') && !pathname.startsWith('/auth/callback')) {
     const loginUrl = new URL('/auth/login', request.url);
     loginUrl.searchParams.set('next', pathname);
     return NextResponse.redirect(loginUrl);
