@@ -6,7 +6,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { 
   LayoutDashboard, Shuffle, CalendarDays, PlayCircle, 
-  Users, LogOut, Shield, Loader2, CalendarCheck2
+  Users, Shield, Loader2, CalendarCheck2
 } from 'lucide-react';
 
 
@@ -25,7 +25,6 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
   const pathname = usePathname();
   const [loading, setLoading] = useState(true);
   const [authorized, setAuthorized] = useState(false);
-  const [playerName, setPlayerName] = useState('');
 
   useEffect(() => {
     checkAuth();
@@ -49,15 +48,8 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
       return;
     }
 
-    setPlayerName(player.full_name.split(' ')[0]);
     setAuthorized(true);
     setLoading(false);
-  }
-
-  async function handleSignOut() {
-    await supabase.auth.signOut();
-    localStorage.removeItem('player_id');
-    router.push('/auth/login');
   }
 
   if (loading) {
@@ -72,27 +64,6 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
 
   return (
     <div className="min-h-screen bg-ink">
-      {/* Admin navbar */}
-      <nav className="sticky top-0 z-50 bg-ink-900/95 backdrop-blur-sm border-b border-ink-700">
-        <div className="max-w-7xl mx-auto px-4 h-14 flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <Link href="/admin" className="flex items-center gap-2">
-              <Shield size={18} className="text-orange-500" />
-              <span className="font-display font-bold text-chalk">SS4 Admin</span>
-            </Link>
-            <span className="text-xs text-ink-500 hidden sm:block">|</span>
-            <span className="text-xs text-ink-400 hidden sm:block">{playerName}</span>
-          </div>
-          <button
-            onClick={handleSignOut}
-            className="flex items-center gap-1.5 text-xs text-ink-400 hover:text-red-400 transition-colors"
-          >
-            <LogOut size={14} />
-            Sign Out
-          </button>
-        </div>
-      </nav>
-
       <div className="max-w-7xl mx-auto flex gap-6 px-4 py-6">
         {/* Sidebar */}
         <aside className="w-56 flex-shrink-0 hidden md:block">
