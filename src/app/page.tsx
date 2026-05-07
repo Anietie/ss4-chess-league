@@ -91,7 +91,7 @@ export default async function HomePage() {
       {/* Hero */}
       <div className="text-center space-y-4 py-10 bg-board-pattern rounded-2xl border border-ink-700">
         <div className="flex justify-center mb-4">
-          <img src="/logo.png" alt="SS4 Chess League" className="h-20 w-auto" />
+          <img src="/logo.png" alt="SS4 Chess League" className="h-36 w-auto" />
         </div>
         <h1 className="font-display text-4xl md:text-5xl font-bold text-chalk">
           SS4 Chess League
