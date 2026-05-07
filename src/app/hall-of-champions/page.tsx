@@ -1,3 +1,4 @@
+export const revalidate = 0; // Disable caching for this page
 import Link from 'next/link';
 import { Crown, Trophy, Shield, Star } from 'lucide-react';
 import { createServerClient } from '@/lib/supabase';
