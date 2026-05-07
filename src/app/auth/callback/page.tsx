@@ -1,30 +1,52 @@
 "use client";
 import { supabase } from "@/lib/supabase";
 import { useSearchParams } from "next/navigation";
-import { Suspense, useEffect } from "react";
+import { Suspense, useEffect, useState } from "react";
 
 function AuthCallbackLogic() {
   const searchParams = useSearchParams();
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let mounted = true;
 
     const handleAuth = async () => {
       try {
-        const { data: { session }, error } = await supabase.auth.getSession();
+        // First check if we have a session
+        const { data: { session }, error: sessionError } = await supabase.auth.getSession();
 
-        if (error || !session) {
-          window.location.href = "/auth/login?error=auth_failed";
-          return;
+        if (sessionError || !session) {
+          // Try to exchange the code from the URL
+          const code = searchParams.get('code');
+          if (code) {
+            const { error: exchangeError } = await supabase.auth.exchangeCodeForSession(code);
+            if (exchangeError) {
+              console.error('Exchange error:', exchangeError);
+              if (mounted) setError('Failed to verify email. Please try again.');
+              return;
+            }
+          } else {
+            // No session and no code — redirect to login
+            window.location.href = '/auth/login?error=missing_confirmation';
+            return;
+          }
         }
 
         if (!mounted) return;
 
-        // Find matching player
+        // Now we should have a session — get the user
+        const { data: { user } } = await supabase.auth.getUser();
+        
+        if (!user) {
+          window.location.href = '/auth/login?error=user_not_found';
+          return;
+        }
+
+        // Find matching player and store their ID
         const { data: player } = await supabase
           .from("players")
           .select("id")
-          .eq("email", session.user.email!)
+          .eq("email", user.email!)
           .maybeSingle();
 
         if (player?.id) {
@@ -33,11 +55,13 @@ function AuthCallbackLogic() {
 
         // Get redirect destination
         const next = searchParams.get("next") ?? "/dashboard";
-
-        // Force full page reload to clear Next.js cache
+        
+        // Force full page reload to clear cache
         window.location.href = next;
+
       } catch (e) {
-        window.location.href = "/auth/login?error=callback_failed";
+        console.error('Callback error:', e);
+        if (mounted) setError('Something went wrong. Please try signing in.');
       }
     };
 
@@ -45,6 +69,18 @@ function AuthCallbackLogic() {
 
     return () => { mounted = false; };
   }, [searchParams]);
+
+  if (error) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-ink">
+        <div className="card p-8 max-w-sm text-center space-y-4">
+          <div className="text-4xl">❌</div>
+          <div className="text-chalk font-medium">{error}</div>
+          <a href="/auth/login" className="btn-gold inline-block">Go to Sign In</a>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-ink">
