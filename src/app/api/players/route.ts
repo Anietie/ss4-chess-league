@@ -2,7 +2,7 @@
  * FILE: src/app/api/players/route.ts
  *
  * Auth: Email + password only.
- * Verification: Confirmation email sent via SMTP (Resend).
+ * Verification: Confirmation email sent automatically via SMTP.
  * Users MUST click the email link before they can sign in.
  */
 
@@ -129,14 +129,17 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'Failed to create account. Please try again.' }, { status: 500 });
   }
 
-  // ── Send confirmation email ──────────────────────────────────────────────
-  const { error: inviteError } = await supabase.auth.admin.inviteUserByEmail(
-    email.toLowerCase().trim(),
-    { redirectTo: `${appUrl}/auth/callback?next=/dashboard` }
-  );
+  // ── Send confirmation email immediately ──────────────────────────────────
+  const { error: resendError } = await supabase.auth.resend({
+    type: 'signup',
+    email: email.toLowerCase().trim(),
+    options: {
+      emailRedirectTo: `${appUrl}/auth/callback?next=/dashboard`,
+    },
+  });
 
-  if (inviteError) {
-    console.error('[register] Failed to send confirmation email:', inviteError.message);
+  if (resendError) {
+    console.error('[register] Failed to send confirmation email:', resendError.message);
   }
 
   // ── Insert player record ──────────────────────────────────────────────────
