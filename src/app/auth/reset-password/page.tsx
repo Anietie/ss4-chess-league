@@ -13,37 +13,41 @@ function ResetPasswordLogic() {
   const [hasSession, setHasSession] = useState(false);
   const [checkingSession, setCheckingSession] = useState(true);
 
-  // Check if we have a valid session from the reset token
   useEffect(() => {
     async function checkSession() {
-      const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+      // Supabase puts the token in the URL hash fragment
+      // We need to wait for Supabase to process it
+      
+      // Check immediately
+      const { data: { session } } = await supabase.auth.getSession();
       
       if (session) {
         setHasSession(true);
-      } else {
-        // Try to get the token from the URL hash or query params
-        const hash = window.location.hash;
-        const type = searchParams.get('type');
-        const code = searchParams.get('code');
+        setCheckingSession(false);
+        return;
+      }
+
+      // Hash might not be processed yet — wait and retry
+      const hash = window.location.hash;
+      if (hash && hash.includes('access_token')) {
+        // Supabase auth listener will process this automatically
+        // Wait for it
+        await new Promise(r => setTimeout(r, 1500));
         
-        if (hash || type === 'recovery' || code) {
-          // Supabase auto-handles the hash, so wait and re-check
-          setTimeout(async () => {
-            const { data: { session: retrySession } } = await supabase.auth.getSession();
-            if (retrySession) {
-              setHasSession(true);
-            }
-            setCheckingSession(false);
-          }, 1000);
+        const { data: { session: retrySession } } = await supabase.auth.getSession();
+        if (retrySession) {
+          setHasSession(true);
+          setCheckingSession(false);
           return;
         }
       }
-      
+
+      // Not from a valid reset link
       setCheckingSession(false);
     }
     
     checkSession();
-  }, [searchParams]);
+  }, []);
 
   const handleReset = async () => {
     if (!password || password.length < 8) {
@@ -71,7 +75,6 @@ function ResetPasswordLogic() {
 
     setSuccess(true);
     
-    // Sign out and redirect to login so they can sign in with new password
     await supabase.auth.signOut();
     
     setTimeout(() => {
@@ -97,9 +100,9 @@ function ResetPasswordLogic() {
           <div className="text-4xl">⚠️</div>
           <h1 className="font-display text-xl font-bold text-chalk">Invalid or Expired Link</h1>
           <p className="text-ink-400 text-sm">
-            This password reset link is invalid or has expired. Please request a new one.
+            This password reset link is invalid or has expired. Please request a new one from the sign in page.
           </p>
-          <a href="/auth/login" className="btn-gold inline-block">Back to Sign In</a>
+          <a href="/auth/login" className="btn-gold inline-block">Request New Link</a>
         </div>
       </div>
     );
@@ -130,25 +133,11 @@ function ResetPasswordLogic() {
         <div className="space-y-3">
           <div>
             <label className="section-label block mb-1.5">New Password</label>
-            <input
-              className="input"
-              type="password"
-              placeholder="Min. 8 characters"
-              value={password}
-              onChange={e => setPassword(e.target.value)}
-              autoFocus
-            />
+            <input className="input" type="password" placeholder="Min. 8 characters" value={password} onChange={e => setPassword(e.target.value)} autoFocus />
           </div>
           <div>
             <label className="section-label block mb-1.5">Confirm New Password</label>
-            <input
-              className="input"
-              type="password"
-              placeholder="Repeat new password"
-              value={confirmPassword}
-              onChange={e => setConfirmPassword(e.target.value)}
-              onKeyDown={e => e.key === 'Enter' && handleReset()}
-            />
+            <input className="input" type="password" placeholder="Repeat new password" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleReset()} />
           </div>
         </div>
 
