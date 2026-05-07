@@ -12,7 +12,7 @@ const adminSupabase = () =>
   );
 
 // POST /api/fixtures  — admin only
-// Body: { season, league, tier, start_date, time_control? }
+// Body: { season, league, start_date, time_control? }
 export async function POST(req: NextRequest) {
   if (req.headers.get("x-admin-secret") !== process.env.ADMIN_SECRET)
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
@@ -20,25 +20,26 @@ export async function POST(req: NextRequest) {
   const {
     season,
     league,
-    tier,
     start_date,
     time_control = "600+5",
   } = await req.json();
-  if (!season || !league || !tier || !start_date)
+  
+  if (!season || !league || !start_date)
     return NextResponse.json(
-      { error: "season, league, tier, start_date required" },
+      { error: "season, league, and start_date are required" },
       { status: 400 },
     );
 
   const supabase = adminSupabase();
 
-  // Fetch players in this league+tier
+  // Fetch active players in this league (exclude admins)
   const { data: players, error: pErr } = await supabase
     .from("players")
     .select("id, full_name, ss4_rating")
     .eq("home_league", league)
-        .eq("is_active", true)
-    .eq("is_suspended", false);
+    .eq("is_active", true)
+    .eq("is_suspended", false)
+    .eq("is_admin", false);
 
   if (pErr) return NextResponse.json({ error: pErr.message }, { status: 500 });
   if (!players || players.length < 6)
@@ -48,7 +49,7 @@ export async function POST(req: NextRequest) {
     );
   if (players.length > 10)
     return NextResponse.json(
-      { error: `Tier has ${players.length} players — max is 10` },
+      { error: `League has ${players.length} players — max is 10` },
       { status: 400 },
     );
 
@@ -63,12 +64,12 @@ export async function POST(req: NextRequest) {
     const scheduled = new Date(base);
     scheduled.setDate(base.getDate() + f.day_offset);
     const deadline = new Date(scheduled);
-    deadline.setDate(scheduled.getDate() + 2); // 2-day window per round
+    deadline.setDate(scheduled.getDate() + 2);
     return {
       season,
       round: f.round,
       league,
-      tier,
+      tier: 'n_a',
       competition_phase: "league_phase",
       white_player_id: f.white_player_id,
       black_player_id: f.black_player_id,
@@ -86,7 +87,6 @@ export async function POST(req: NextRequest) {
   const standingRows = players.map((p) => ({
     season,
     league,
-    tier,
     player_id: p.id,
     points: 0,
     wins: 0,
@@ -94,10 +94,11 @@ export async function POST(req: NextRequest) {
     losses: 0,
     games_played: 0,
   }));
+  
   await supabase
     .from("standings")
     .upsert(standingRows, {
-      onConflict: "season,league,tier,player_id",
+      onConflict: "season,league,player_id",
       ignoreDuplicates: true,
     });
 
@@ -128,7 +129,7 @@ export async function POST(req: NextRequest) {
   });
 }
 
-// GET /api/fixtures?season=1&league=league_1&tier=premier&status=pending
+// GET /api/fixtures?season=1&league=league_1&status=pending
 export async function GET(req: NextRequest) {
   const p = new URL(req.url).searchParams;
   const supabase = adminSupabase();
@@ -146,7 +147,6 @@ export async function GET(req: NextRequest) {
 
   if (p.get("season")) query = query.eq("season", Number(p.get("season")));
   if (p.get("league")) query = query.eq("league", p.get("league")!);
-  if (p.get("tier")) query = query.eq("tier", p.get("tier")!);
   if (p.get("status") === "pending") query = query.eq("result", "*");
   if (p.get("status") === "completed") query = query.neq("result", "*");
   if (p.get("player_id")) {
@@ -158,7 +158,6 @@ export async function GET(req: NextRequest) {
   query = query.order("round").order("scheduled_date");
 
   const { data, error } = await query;
-  if (error)
-    return NextResponse.json({ error: error.message }, { status: 500 });
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json({ fixtures: data });
 }

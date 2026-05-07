@@ -40,6 +40,7 @@ export async function POST(req: NextRequest) {
     .from('players')
     .select('id, full_name, ss4_rating, rating_deviation, draft_rating, calibration_complete, is_active, is_suspended, joining_season')
     .eq('is_active', true)
+    .eq('is_admin', false) 
     .eq('is_suspended', false)
     .eq('calibration_complete', true);
 

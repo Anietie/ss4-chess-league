@@ -49,7 +49,8 @@ export async function POST(req: NextRequest) {
       .from("players")
       .select("id, full_name, ss4_rating")
       .eq("is_active", true)
-      .eq("is_suspended", false);
+      .eq("is_suspended", false)
+      .eq('is_admin', false);
 
     if (!players?.length) {
       return NextResponse.json({ error: "No eligible players" }, { status: 400 });
