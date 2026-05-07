@@ -1,15 +1,49 @@
 "use client";
 import { supabase } from "@/lib/supabase";
-import { useRouter } from "next/navigation";
+import { useSearchParams } from "next/navigation";
 import { useState, useEffect, Suspense } from "react";
 
 function ResetPasswordLogic() {
-  const router = useRouter();
+  const searchParams = useSearchParams();
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState(false);
+  const [hasSession, setHasSession] = useState(false);
+  const [checkingSession, setCheckingSession] = useState(true);
+
+  // Check if we have a valid session from the reset token
+  useEffect(() => {
+    async function checkSession() {
+      const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+      
+      if (session) {
+        setHasSession(true);
+      } else {
+        // Try to get the token from the URL hash or query params
+        const hash = window.location.hash;
+        const type = searchParams.get('type');
+        const code = searchParams.get('code');
+        
+        if (hash || type === 'recovery' || code) {
+          // Supabase auto-handles the hash, so wait and re-check
+          setTimeout(async () => {
+            const { data: { session: retrySession } } = await supabase.auth.getSession();
+            if (retrySession) {
+              setHasSession(true);
+            }
+            setCheckingSession(false);
+          }, 1000);
+          return;
+        }
+      }
+      
+      setCheckingSession(false);
+    }
+    
+    checkSession();
+  }, [searchParams]);
 
   const handleReset = async () => {
     if (!password || password.length < 8) {
@@ -37,20 +71,48 @@ function ResetPasswordLogic() {
 
     setSuccess(true);
     
-    // Redirect to dashboard after 2 seconds
+    // Sign out and redirect to login so they can sign in with new password
+    await supabase.auth.signOut();
+    
     setTimeout(() => {
-      window.location.href = '/dashboard';
-    }, 2000);
+      window.location.href = '/auth/login';
+    }, 3000);
   };
+
+  if (checkingSession) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-ink">
+        <div className="text-center space-y-4">
+          <div className="text-4xl animate-spin">♟</div>
+          <div className="text-chalk text-sm">Verifying your reset link...</div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!hasSession) {
+    return (
+      <div className="min-h-screen flex items-center justify-center px-4">
+        <div className="card p-8 w-full max-w-sm text-center space-y-4">
+          <div className="text-4xl">⚠️</div>
+          <h1 className="font-display text-xl font-bold text-chalk">Invalid or Expired Link</h1>
+          <p className="text-ink-400 text-sm">
+            This password reset link is invalid or has expired. Please request a new one.
+          </p>
+          <a href="/auth/login" className="btn-gold inline-block">Back to Sign In</a>
+        </div>
+      </div>
+    );
+  }
 
   if (success) {
     return (
-      <div className="min-h-screen flex items-center justify-center px-4 bg-board-pattern">
+      <div className="min-h-screen flex items-center justify-center px-4">
         <div className="card p-8 w-full max-w-sm text-center space-y-4">
           <div className="text-4xl">✅</div>
           <h1 className="font-display text-xl font-bold text-chalk">Password Updated!</h1>
-          <p className="text-ink-400 text-sm">Your password has been changed successfully. Redirecting to dashboard...</p>
-          <a href="/dashboard" className="btn-gold inline-block">Go to Dashboard</a>
+          <p className="text-ink-400 text-sm">Your password has been changed. Redirecting to sign in...</p>
+          <a href="/auth/login" className="btn-gold inline-block">Sign In Now</a>
         </div>
       </div>
     );
