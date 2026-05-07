@@ -41,6 +41,7 @@ async function getHomeData() {
       .from("players")
       .select("id,full_name,ss4_rating,rating_deviation,home_league")
       .eq("is_active", true)
+      .eq('is_admin', false)
       .neq("home_league", "unassigned")
       .neq("home_league", "calibration")
       .order("ss4_rating", { ascending: false })

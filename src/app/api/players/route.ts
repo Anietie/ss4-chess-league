@@ -2,7 +2,8 @@
  * FILE: src/app/api/players/route.ts
  *
  * Auth: Email + password only.
- * Verification: Supabase sends confirmation email automatically via Resend SMTP.
+ * Verification: Confirmation email sent via SMTP (Resend).
+ * Users MUST click the email link before they can sign in.
  */
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -103,11 +104,13 @@ export async function POST(req: NextRequest) {
   const normalizedSchool = institution?.name ?? school.trim();
   const normalizedDepartment = department.trim();
 
-  // ── Create Supabase Auth user ─────────────────────────────────────────────
+  // ── Create Supabase Auth user — do NOT auto-confirm ─────────────────────
+  const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
+
   const { data: authData, error: authError } = await supabase.auth.admin.createUser({
     email: email.toLowerCase().trim(),
     password,
-    email_confirm: true,
+    email_confirm: false,  // User MUST click email link to confirm
     user_metadata: { 
       full_name: full_name.trim(), 
       school: normalizedSchool, 
@@ -124,6 +127,16 @@ export async function POST(req: NextRequest) {
 
   if (!authData.user?.id) {
     return NextResponse.json({ error: 'Failed to create account. Please try again.' }, { status: 500 });
+  }
+
+  // ── Send confirmation email ──────────────────────────────────────────────
+  const { error: inviteError } = await supabase.auth.admin.inviteUserByEmail(
+    email.toLowerCase().trim(),
+    { redirectTo: `${appUrl}/auth/callback?next=/dashboard` }
+  );
+
+  if (inviteError) {
+    console.error('[register] Failed to send confirmation email:', inviteError.message);
   }
 
   // ── Insert player record ──────────────────────────────────────────────────
@@ -149,13 +162,14 @@ export async function POST(req: NextRequest) {
       calibration_complete: !needsCalibration,
       auth_user_id:         authData.user.id,
       is_active:            true,
-      is_verified:          false,
+      is_verified:          false,  // Must confirm email first
     })
     .select('id, full_name')
     .single();
 
   if (playerError) {
     console.error('[register] Player insert failed:', playerError.message);
+    // Rollback: delete auth user
     await supabase.auth.admin.deleteUser(authData.user.id);
     return NextResponse.json({ error: `Failed to create player record: ${playerError.message}` }, { status: 500 });
   }
@@ -208,6 +222,7 @@ export async function GET(req: NextRequest) {
     .from('players')
     .select('id, full_name, home_league, school, department, institution_category, ss4_rating, rating_deviation, is_provisional, joining_season, games_played, chess_com_username, calibration_complete')
     .eq('is_active', true)
+    .eq('is_admin', false)
     .order('ss4_rating', { ascending: false })
     .limit(limit);
 
