@@ -69,21 +69,22 @@ function LoginLogic() {
   };
 
   const handleReset = async () => {
-    if (!email) { setError('Enter your email address first.'); return; }
-    if (countdown > 0) return;
-    setLoading(true); setError('');
-    const { error: err } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: `${window.location.origin}/auth/reset-password`,
-    });
-    setLoading(false);
-    if (err) {
-      if (err.status === 429) { setError('Please wait a minute before requesting another link.'); setCountdown(60); }
-      else { setError(err.message); }
-      return;
-    }
-    setResetSent(true);
-    setCountdown(60);
-  };
+      if (!email) { setError('Enter your email address first.'); return; }
+      if (countdown > 0) return;
+      setLoading(true); setError('');
+      
+      // Don't specify redirectTo — let Supabase use the default flow
+      const { error: err } = await supabase.auth.resetPasswordForEmail(email);
+      
+      setLoading(false);
+      if (err) {
+        if (err.status === 429) { setError('Please wait a minute before requesting another link.'); setCountdown(60); }
+        else { setError(err.message); }
+        return;
+      }
+      setResetSent(true);
+      setCountdown(60);
+    };
 
   if (showReset) return (
     <div className="min-h-screen flex items-center justify-center px-4 bg-board-pattern">
