@@ -92,7 +92,6 @@ function createGameState(game) {
 }
 
 io.on('connection', socket => {
-  // ── Challenge lobby ──────────────────────────────────────────────────────
   socket.on('join_challenge', ({ challenge_id, player_id }) => {
     const room = `challenge:${challenge_id}`;
     socket.join(room);
@@ -108,7 +107,6 @@ io.on('connection', socket => {
     challengeRooms.get(challenge_id)?.delete(socket.id);
   });
 
-  // ── Join game ────────────────────────────────────────────────────────────
   socket.on('join_game', async ({ game_id, player_id, auth_user_id, is_spectator }) => {
     const room = `game:${game_id}`;
 
@@ -186,8 +184,6 @@ io.on('connection', socket => {
             if (!activeGames.has(game_id)) {
               const gameState = createGameState(enriched);
 
-              // ── REPLAY EXISTING MOVES FROM DB ──────────────────────────
-              // If moves were saved to DB (from a previous session), replay them
               if (game.moves_json && game.moves_json.length > 0) {
                 console.log(`[join_game] Replaying ${game.moves_json.length} saved moves...`);
                 for (const move of game.moves_json) {
@@ -199,17 +195,19 @@ io.on('connection', socket => {
                     }
                   } catch (moveErr) {
                     console.warn(`[join_game] Failed to replay move:`, moveErr?.message);
-                    break; // Stop replaying if a move fails
+                    break;
                   }
                 }
                 console.log(`[join_game] Replayed to position after ${gameState.chess.history().length} moves`);
               }
 
-              // If the game was already in progress, set it to active
               if (game.moves_json && game.moves_json.length > 0) {
                 gameState.status = 'active';
                 gameState.last_move_ts = Date.now();
               }
+
+              if (game.white_time_remaining != null) gameState.white_time = game.white_time_remaining;
+              if (game.black_time_remaining != null) gameState.black_time = game.black_time_remaining;
 
               activeGames.set(game_id, gameState);
             }
@@ -252,7 +250,6 @@ io.on('connection', socket => {
         if (t) { clearTimeout(t); state.disc_timers.delete(resolvedPlayerId); }
         console.log(`[join_game] → joined as PLAYER | connected now: [${[...state.connected].join(', ')}]`);
 
-        // ── Cancel any pending no-show claims against this player ──────────
         const appUrl = process.env.NEXT_PUBLIC_APP_URL;
         if (appUrl) {
           try {
@@ -311,7 +308,6 @@ io.on('connection', socket => {
     }
   });
 
-  // ── Make move ────────────────────────────────────────────────────────────
   socket.on('make_move', async ({ game_id, move, player_id }) => {
     const state = activeGames.get(game_id);
     if (!state || state.status !== 'active') return;
@@ -337,10 +333,11 @@ io.on('connection', socket => {
         current_turn: state.chess.turn(), move_number: state.chess.history().length,
       });
 
-      // ── SAVE CURRENT STATE TO DB FOR RECONNECT RESILIENCE ──────────────
       supabase.from('games').update({
         game_state_fen: state.chess.fen(),
-        moves_json: state.chess.history({ verbose: true })
+        moves_json: state.chess.history({ verbose: true }),
+        white_time_remaining: state.white_time,
+        black_time_remaining: state.black_time,
       }).eq('id', game_id).catch(() => {});
 
       const plyNum = state.chess.history().length;
@@ -355,14 +352,12 @@ io.on('connection', socket => {
     } catch { socket.emit('invalid_move', { reason: 'Error processing move' }); }
   });
 
-  // ── Resign ───────────────────────────────────────────────────────────────
   socket.on('resign', async ({ game_id, player_id }) => {
     const state = activeGames.get(game_id);
     if (!state || state.status !== 'active') return;
     await endGame(game_id, player_id === state.white_player_id ? '0-1' : '1-0', state.chess.pgn());
   });
 
-  // ── Draw ─────────────────────────────────────────────────────────────────
   socket.on('offer_draw', ({ game_id, player_id }) => {
     const state = activeGames.get(game_id);
     if (!state || state.status !== 'active') return;
@@ -375,7 +370,6 @@ io.on('connection', socket => {
     await endGame(game_id, '0.5-0.5', state.chess.pgn());
   });
 
-  // ── Claim timeout ────────────────────────────────────────────────────────
   socket.on('claim_timeout', async ({ game_id }) => {
     const state = activeGames.get(game_id);
     if (!state || state.status !== 'active') return;
@@ -389,7 +383,6 @@ io.on('connection', socket => {
     }
   });
 
-  // ── No-Show Claim ───────────────────────────────────────────────────────
   socket.on('claim_no_show', async ({ game_id, player_id }) => {
     const state = activeGames.get(game_id);
     if (!state || state.status !== 'active') {
@@ -435,7 +428,6 @@ io.on('connection', socket => {
     }
   });
 
-  // ── Nudge Opponent ──────────────────────────────────────────────────────
   socket.on('nudge_opponent', async ({ game_id, player_id }) => {
     const state = activeGames.get(game_id);
     if (!state) return;
@@ -469,7 +461,6 @@ io.on('connection', socket => {
     io.to(`game:${game_id}`).emit('opponent_nudged', { by: player_id });
   });
 
-  // ── Disconnect ───────────────────────────────────────────────────────────
   socket.on('disconnect', async () => {
     const { game_id, player_id, is_spectator } = socket.data || {};
     if (!game_id) return;
@@ -582,87 +573,31 @@ async function endGame(gameId, result, pgn) {
   setTimeout(() => activeGames.delete(gameId), 30_000);
 }
 
-// ── Position evaluator (material + piece-square tables) ──────────────────────
+// ── Position evaluator ──────────────────────────────────────────────────────
 
 const PIECE_VALUES = { p: 100, n: 320, b: 330, r: 500, q: 900, k: 0 };
 
 const PST = {
-  p: [
-    [  0,  0,  0,  0,  0,  0,  0,  0],
-    [ 50, 50, 50, 50, 50, 50, 50, 50],
-    [ 10, 10, 20, 30, 30, 20, 10, 10],
-    [  5,  5, 10, 25, 25, 10,  5,  5],
-    [  0,  0,  0, 20, 20,  0,  0,  0],
-    [  5, -5,-10,  0,  0,-10, -5,  5],
-    [  5, 10, 10,-20,-20, 10, 10,  5],
-    [  0,  0,  0,  0,  0,  0,  0,  0],
-  ],
-  n: [
-    [-50,-40,-30,-30,-30,-30,-40,-50],
-    [-40,-20,  0,  0,  0,  0,-20,-40],
-    [-30,  0, 10, 15, 15, 10,  0,-30],
-    [-30,  5, 15, 20, 20, 15,  5,-30],
-    [-30,  0, 15, 20, 20, 15,  0,-30],
-    [-30,  5, 10, 15, 15, 10,  5,-30],
-    [-40,-20,  0,  5,  5,  0,-20,-40],
-    [-50,-40,-30,-30,-30,-30,-40,-50],
-  ],
-  b: [
-    [-20,-10,-10,-10,-10,-10,-10,-20],
-    [-10,  0,  0,  0,  0,  0,  0,-10],
-    [-10,  0,  5, 10, 10,  5,  0,-10],
-    [-10,  5,  5, 10, 10,  5,  5,-10],
-    [-10,  0, 10, 10, 10, 10,  0,-10],
-    [-10, 10, 10, 10, 10, 10, 10,-10],
-    [-10,  5,  0,  0,  0,  0,  5,-10],
-    [-20,-10,-10,-10,-10,-10,-10,-20],
-  ],
-  r: [
-    [  0,  0,  0,  0,  0,  0,  0,  0],
-    [  5, 10, 10, 10, 10, 10, 10,  5],
-    [ -5,  0,  0,  0,  0,  0,  0, -5],
-    [ -5,  0,  0,  0,  0,  0,  0, -5],
-    [ -5,  0,  0,  0,  0,  0,  0, -5],
-    [ -5,  0,  0,  0,  0,  0,  0, -5],
-    [ -5,  0,  0,  0,  0,  0,  0, -5],
-    [  0,  0,  0,  5,  5,  0,  0,  0],
-  ],
-  q: [
-    [-20,-10,-10, -5, -5,-10,-10,-20],
-    [-10,  0,  0,  0,  0,  0,  0,-10],
-    [-10,  0,  5,  5,  5,  5,  0,-10],
-    [ -5,  0,  5,  5,  5,  5,  0, -5],
-    [  0,  0,  5,  5,  5,  5,  0, -5],
-    [-10,  5,  5,  5,  5,  5,  0,-10],
-    [-10,  0,  5,  0,  0,  0,  0,-10],
-    [-20,-10,-10, -5, -5,-10,-10,-20],
-  ],
-  k: [
-    [-30,-40,-40,-50,-50,-40,-40,-30],
-    [-30,-40,-40,-50,-50,-40,-40,-30],
-    [-30,-40,-40,-50,-50,-40,-40,-30],
-    [-30,-40,-40,-50,-50,-40,-40,-30],
-    [-20,-30,-30,-40,-40,-30,-30,-20],
-    [-10,-20,-20,-20,-20,-20,-20,-10],
-    [ 20, 20,  0,  0,  0,  0, 20, 20],
-    [ 20, 30, 10,  0,  0, 10, 30, 20],
-  ],
+  p: [[0,0,0,0,0,0,0,0],[50,50,50,50,50,50,50,50],[10,10,20,30,30,20,10,10],[5,5,10,25,25,10,5,5],[0,0,0,20,20,0,0,0],[5,-5,-10,0,0,-10,-5,5],[5,10,10,-20,-20,10,10,5],[0,0,0,0,0,0,0,0]],
+  n: [[-50,-40,-30,-30,-30,-30,-40,-50],[-40,-20,0,0,0,0,-20,-40],[-30,0,10,15,15,10,0,-30],[-30,5,15,20,20,15,5,-30],[-30,0,15,20,20,15,0,-30],[-30,5,10,15,15,10,5,-30],[-40,-20,0,5,5,0,-20,-40],[-50,-40,-30,-30,-30,-30,-40,-50]],
+  b: [[-20,-10,-10,-10,-10,-10,-10,-20],[-10,0,0,0,0,0,0,-10],[-10,0,5,10,10,5,0,-10],[-10,5,5,10,10,5,5,-10],[-10,0,10,10,10,10,0,-10],[-10,10,10,10,10,10,10,-10],[-10,5,0,0,0,0,5,-10],[-20,-10,-10,-10,-10,-10,-10,-20]],
+  r: [[0,0,0,0,0,0,0,0],[5,10,10,10,10,10,10,5],[-5,0,0,0,0,0,0,-5],[-5,0,0,0,0,0,0,-5],[-5,0,0,0,0,0,0,-5],[-5,0,0,0,0,0,0,-5],[-5,0,0,0,0,0,0,-5],[0,0,0,5,5,0,0,0]],
+  q: [[-20,-10,-10,-5,-5,-10,-10,-20],[-10,0,0,0,0,0,0,-10],[-10,0,5,5,5,5,0,-10],[-5,0,5,5,5,5,0,-5],[0,0,5,5,5,5,0,-5],[-10,5,5,5,5,5,0,-10],[-10,0,5,0,0,0,0,-10],[-20,-10,-10,-5,-5,-10,-10,-20]],
+  k: [[-30,-40,-40,-50,-50,-40,-40,-30],[-30,-40,-40,-50,-50,-40,-40,-30],[-30,-40,-40,-50,-50,-40,-40,-30],[-30,-40,-40,-50,-50,-40,-40,-30],[-20,-30,-30,-40,-40,-30,-30,-20],[-10,-20,-20,-20,-20,-20,-20,-10],[20,20,0,0,0,0,20,20],[20,30,10,0,0,10,30,20]],
 };
 
 function evalPosition(chess) {
   if (chess.isCheckmate()) return chess.turn() === 'w' ? -99999 : 99999;
   if (chess.isDraw() || chess.isStalemate()) return 0;
-
   let score = 0;
   const board = chess.board();
-
   for (let r = 0; r < 8; r++) {
     for (let f = 0; f < 8; f++) {
       const piece = board[r][f];
       if (!piece) continue;
-      const val   = PIECE_VALUES[piece.type] ?? 0;
+      const val = PIECE_VALUES[piece.type] ?? 0;
       const pstRow = piece.color === 'w' ? r : 7 - r;
-      const bonus  = PST[piece.type]?.[pstRow]?.[f] ?? 0;
+      const bonus = PST[piece.type]?.[pstRow]?.[f] ?? 0;
       score += piece.color === 'w' ? (val + bonus) : -(val + bonus);
     }
   }
@@ -687,7 +622,7 @@ function findBestMove(chess) {
   return best ? best.from + best.to : null;
 }
 
-// ── Server-side anti-cheat analysis pipeline ─────────────────────────────────
+// ── Anti-cheat ─────────────────────────────────────────────────────────────
 
 const { computeCorrelationScore } = (() => {
   const THRESHOLD = 75;
@@ -710,22 +645,20 @@ const { computeCorrelationScore } = (() => {
       if (entry.top3?.includes(actualMove)) top3++;
       const before = byPly.get(entry.ply - 1);
       if (before !== undefined) {
-        const rawCPL = playingSide === 'white'
-          ? before.score - entry.score
-          : entry.score - before.score;
+        const rawCPL = playingSide === 'white' ? before.score - entry.score : entry.score - before.score;
         totalCPL += Math.max(0, Math.min(rawCPL, 500));
         cplCount++;
       }
     }
-    const n        = playerEntries.length;
-    const top1Pct  = (top1 / n) * 100;
-    const top3Pct  = (top3 / n) * 100;
-    const avgCPL   = cplCount > 0 ? totalCPL / cplCount : 999;
+    const n = playerEntries.length;
+    const top1Pct = (top1 / n) * 100;
+    const top3Pct = (top3 / n) * 100;
+    const avgCPL = cplCount > 0 ? totalCPL / cplCount : 999;
     const cplScore = Math.max(0, 100 - avgCPL / 3);
     const correlation_score = Math.round(top1Pct * 0.5 + top3Pct * 0.25 + cplScore * 0.25);
     const flag = correlation_score >= THRESHOLD && n >= 20;
     let verdict = 'clean';
-    if (n < 20)    verdict = 'insufficient_moves';
+    if (n < 20) verdict = 'insufficient_moves';
     else if (flag) verdict = correlation_score >= 90 ? 'strong_suspicion' : 'elevated_correlation';
     return { player_id, game_id, move_count: n, top1_matches: top1, top3_matches: top3,
              avg_centipawn_loss: Math.round(avgCPL), correlation_score, flag, verdict };
@@ -736,34 +669,22 @@ const { computeCorrelationScore } = (() => {
 async function runAnticheatPipeline(gameId, pgn, whiteName, blackName, whitePlayerId, blackPlayerId, competitionPhase, prebuiltAnalysis = null) {
   if (competitionPhase === 'calibration') return;
   console.log(`[anticheat] Pipeline for game ${gameId} (${whiteName} vs ${blackName})`);
-
   try {
     let analysisJson = prebuiltAnalysis;
-
     if (!analysisJson || analysisJson.length === 0) {
-      console.log(`[anticheat] No prebuilt analysis — running batch Stockfish depth 20`);
       analysisJson = await analyseGameServerSide(pgn);
       if (!analysisJson.length) { console.warn(`[anticheat] Empty analysis — skipping`); return; }
       await supabase.from('games').update({ analysis_json: analysisJson, analysis_complete: true }).eq('id', gameId);
-    } else {
-      console.log(`[anticheat] Using prebuilt analysis (${analysisJson.length} positions)`);
     }
-
     const chess = new Chess();
     chess.loadPgn(pgn);
-    const uciMoves = chess.history({ verbose: true })
-      .map(m => m.from + m.to + (m.promotion ?? ''));
-
+    const uciMoves = chess.history({ verbose: true }).map(m => m.from + m.to + (m.promotion ?? ''));
     const whiteResult = computeCorrelationScore(uciMoves, analysisJson, 'white', whitePlayerId, gameId);
     const blackResult = computeCorrelationScore(uciMoves, analysisJson, 'black', blackPlayerId, gameId);
-
-    console.log(`[anticheat] ${whiteName} (white): score=${whiteResult.correlation_score} verdict=${whiteResult.verdict}`);
-    console.log(`[anticheat] ${blackName} (black): score=${blackResult.correlation_score} verdict=${blackResult.verdict}`);
-
     await supabase.from('games').update({
       white_anticheat_score: whiteResult.correlation_score,
       black_anticheat_score: blackResult.correlation_score,
-      anticheat_flagged:     whiteResult.flag || blackResult.flag,
+      anticheat_flagged: whiteResult.flag || blackResult.flag,
     }).eq('id', gameId);
 
     const flaggedPlayers = [
@@ -773,48 +694,34 @@ async function runAnticheatPipeline(gameId, pgn, whiteName, blackName, whitePlay
 
     for (const fp of flaggedPlayers) {
       const isStrong = fp.result.verdict === 'strong_suspicion';
-      const scoreLabel = `${fp.result.correlation_score}/100`;
-      const topLabel   = `${fp.result.top1_matches}/${fp.result.move_count} engine top-1 matches`;
-
       await supabase.from('conduct_violations').insert({
-        player_id:      fp.result.player_id,
-        violation_type: 'cheating_flag',
-        severity:       isStrong ? 'game_forfeit' : 'warning',
-        description:    `Engine correlation score ${scoreLabel} (${topLabel}, avg CPL ${fp.result.avg_centipawn_loss}). Verdict: ${fp.result.verdict}. Pending manual review.`,
-        game_id:        gameId,
-      });
-
-      await supabase.from('notifications').insert({
-        player_id: fp.result.player_id,
-        type:      'admin_action',
-        title:     isStrong ? '⚠️ Game Under Serious Review' : '🔍 Game Flagged for Review',
-        message:   isStrong
-          ? `Your game against ${fp.opponentName} has been flagged with a high engine-correlation score (${scoreLabel}). The game result has been placed under review. A League Officer will investigate and you will be notified of the outcome.`
-          : `Your game against ${fp.opponentName} has been flagged for routine review (score ${scoreLabel}). No action has been taken. A League Officer will review and notify you.`,
+        player_id: fp.result.player_id, violation_type: 'cheating_flag',
+        severity: isStrong ? 'game_forfeit' : 'warning',
+        description: `Engine correlation score ${fp.result.correlation_score}/100. Verdict: ${fp.result.verdict}. Pending manual review.`,
         game_id: gameId,
       });
-
       await supabase.from('notifications').insert({
-        player_id: fp.opponentId,
-        type:      'admin_action',
-        title:     '🔍 Opponent Game Under Review',
-        message:   `Your game against ${fp.name} is under review for a potential conduct issue. Your result is ${isStrong ? 'temporarily held pending a League Officer decision' : 'unaffected unless the review finds a confirmed violation'}. You will be notified of the outcome.`,
+        player_id: fp.result.player_id, type: 'admin_action',
+        title: isStrong ? '⚠️ Game Under Serious Review' : '🔍 Game Flagged for Review',
+        message: isStrong
+          ? `Your game against ${fp.opponentName} has been flagged with a high engine-correlation score. A League Officer will investigate.`
+          : `Your game against ${fp.opponentName} has been flagged for routine review. No action has been taken.`,
         game_id: gameId,
       });
-
-      console.log(`[anticheat] ⚑ Flagged ${fp.name} (${fp.result.verdict}) — conduct_violation created, both players notified`);
+      await supabase.from('notifications').insert({
+        player_id: fp.opponentId, type: 'admin_action',
+        title: '🔍 Opponent Game Under Review',
+        message: `Your game against ${fp.name} is under review. You will be notified of the outcome.`,
+        game_id: gameId,
+      });
     }
-
-    if (!flaggedPlayers.length) {
-      console.log(`[anticheat] ✓ Both players clean for game ${gameId}`);
-    }
-
   } catch (err) {
     console.error(`[anticheat] Pipeline error for game ${gameId}:`, err?.message ?? err);
   }
 }
 
-// ── Internal: called by /api/casual/[id] when a challenge is accepted ───────
+// ── HTTP endpoints ──────────────────────────────────────────────────────────
+
 app.post('/notify-challenge-accepted', (req, res) => {
   const secret = req.headers['x-internal-secret'];
   if (secret !== (process.env.INTERNAL_API_SECRET || '')) {
@@ -831,32 +738,18 @@ app.post('/notify-challenge-accepted', (req, res) => {
 });
 
 app.get('/health', (req, res) => res.json({
-  status: 'ok', 
-  timestamp: Date.now(),
-  active_games: activeGames.size, 
-  clients: io.engine.clientsCount
+  status: 'ok', timestamp: Date.now(), active_games: activeGames.size, clients: io.engine.clientsCount
 }));
 
 app.get('/debug/game/:gameId', (req, res) => {
   const { gameId } = req.params;
   const state = activeGames.get(gameId);
-  if (!state) {
-    return res.json({
-      found: false,
-      active_game_ids: [...activeGames.keys()],
-      message: 'Game not in memory — not yet joined or already ended'
-    });
-  }
+  if (!state) return res.json({ found: false, active_game_ids: [...activeGames.keys()], message: 'Game not in memory' });
   res.json({
-    found: true,
-    game_id: gameId,
-    status: state.status,
-    white_player_id: state.white_player_id,
-    black_player_id: state.black_player_id,
-    white_name: state.white_name,
-    black_name: state.black_name,
-    connected: [...state.connected],
-    spectators: state.spectators.size,
+    found: true, game_id: gameId, status: state.status,
+    white_player_id: state.white_player_id, black_player_id: state.black_player_id,
+    white_name: state.white_name, black_name: state.black_name,
+    connected: [...state.connected], spectators: state.spectators.size,
     has_white_connected: state.connected.has(state.white_player_id),
     has_black_connected: state.connected.has(state.black_player_id),
     fen: state.chess.fen(),
