@@ -182,8 +182,36 @@ io.on('connection', socket => {
               white_whatsapp: game.white_player?.whatsapp_number || null,
               black_whatsapp: game.black_player?.whatsapp_number || null,
             };
+
             if (!activeGames.has(game_id)) {
-              activeGames.set(game_id, createGameState(enriched));
+              const gameState = createGameState(enriched);
+
+              // ── REPLAY EXISTING MOVES FROM DB ──────────────────────────
+              // If moves were saved to DB (from a previous session), replay them
+              if (game.moves_json && game.moves_json.length > 0) {
+                console.log(`[join_game] Replaying ${game.moves_json.length} saved moves...`);
+                for (const move of game.moves_json) {
+                  try {
+                    if (typeof move === 'string') {
+                      gameState.chess.move(move);
+                    } else if (move.from && move.to) {
+                      gameState.chess.move({ from: move.from, to: move.to, promotion: move.promotion || 'q' });
+                    }
+                  } catch (moveErr) {
+                    console.warn(`[join_game] Failed to replay move:`, moveErr?.message);
+                    break; // Stop replaying if a move fails
+                  }
+                }
+                console.log(`[join_game] Replayed to position after ${gameState.chess.history().length} moves`);
+              }
+
+              // If the game was already in progress, set it to active
+              if (game.moves_json && game.moves_json.length > 0) {
+                gameState.status = 'active';
+                gameState.last_move_ts = Date.now();
+              }
+
+              activeGames.set(game_id, gameState);
             }
           })();
 
@@ -308,6 +336,12 @@ io.on('connection', socket => {
         white_time: state.white_time, black_time: state.black_time,
         current_turn: state.chess.turn(), move_number: state.chess.history().length,
       });
+
+      // ── SAVE CURRENT STATE TO DB FOR RECONNECT RESILIENCE ──────────────
+      supabase.from('games').update({
+        game_state_fen: state.chess.fen(),
+        moves_json: state.chess.history({ verbose: true })
+      }).eq('id', game_id).catch(() => {});
 
       const plyNum = state.chess.history().length;
       queuePosition(game_id, state.chess.fen(), plyNum);
