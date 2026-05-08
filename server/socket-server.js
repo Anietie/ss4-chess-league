@@ -4,10 +4,11 @@
  * Deploy separately on Railway / Render alongside Next.js.
  */
 
-// Load .env.local in local dev only (Render injects env vars in production)
+// Load env vars from .env.local only in local development
 if (process.env.NODE_ENV !== 'production') {
   try { require('dotenv').config({ path: '.env.local' }); } catch {}
 }
+
 const express = require('express');
 const { createServer } = require('http');
 const { Server } = require('socket.io');
@@ -15,14 +16,6 @@ const { Chess } = require('chess.js');
 const cors = require('cors');
 const { createClient } = require('@supabase/supabase-js');
 const { initGameEngine, queuePosition, flushGameAnalysis, destroyGameEngine, analyseGameServerSide } = require('./stockfish-analysis');
-// Load env vars from .env.local only in local development
-if (process.env.NODE_ENV !== 'production') {
-  try {
-    require('dotenv').config({ path: '.env.local' });
-  } catch {
-    // dotenv not installed — probably production, env vars are injected
-  }
-}
 
 const app = express();
 
@@ -141,7 +134,7 @@ io.on('connection', socket => {
           resolveMethod = 'auth_user_id_lookup';
           console.log(`[join_game] ✓ resolved player_id=${resolvedPlayerId} via auth_user_id (name: ${playerRow.full_name})`);
         } else {
-          console.warn(`[join_game] ✗ auth_user_id lookup returned no row — auth_user_id column may be NULL in DB for this player`);
+          console.warn(`[join_game] ✗ auth_user_id lookup returned no row`);
           if (player_id) {
             console.log(`[join_game] falling back to client player_id=${player_id}`);
             resolveMethod = 'client_fallback';
@@ -151,7 +144,7 @@ io.on('connection', socket => {
         console.error(`[join_game] auth_user_id lookup threw:`, e?.message);
       }
     } else {
-      console.warn(`[join_game] No auth_user_id received from client — old client code? Using player_id=${player_id ?? 'null'}`);
+      console.warn(`[join_game] No auth_user_id received from client`);
     }
 
     const effectiveIsSpectator = !resolvedPlayerId || is_spectator === true;
@@ -161,7 +154,7 @@ io.on('connection', socket => {
       if (!activeGames.has(game_id)) {
         if (pendingGameSetup.has(game_id)) {
           console.log(`[join_game] waiting for pending setup...`);
-          try { await pendingGameSetup.get(game_id); } catch { /* handled below */ }
+          try { await pendingGameSetup.get(game_id); } catch {}
         } else {
           const setupPromise = (async () => {
             const { data: game, error: gameError } = await supabase.from('games')
@@ -169,7 +162,7 @@ io.on('connection', socket => {
               .eq('id', game_id).single();
 
             if (gameError || !game) {
-              console.error(`[join_game] game DB fetch error: ${gameError?.message} | game=${JSON.stringify(game)}`);
+              console.error(`[join_game] game DB fetch error: ${gameError?.message}`);
               throw { type: 'not_found' };
             }
 
@@ -231,7 +224,8 @@ io.on('connection', socket => {
         if (t) { clearTimeout(t); state.disc_timers.delete(resolvedPlayerId); }
         console.log(`[join_game] → joined as PLAYER | connected now: [${[...state.connected].join(', ')}]`);
 
-        // ── Cancel any pending no-show claims against this player ──────────        const appUrl = process.env.NEXT_PUBLIC_APP_URL;
+        // ── Cancel any pending no-show claims against this player ──────────
+        const appUrl = process.env.NEXT_PUBLIC_APP_URL;
         if (appUrl) {
           try {
             await fetch(`${appUrl}/api/games/${game_id}/claim-no-show`, {
@@ -554,7 +548,6 @@ async function endGame(gameId, result, pgn) {
   setTimeout(() => activeGames.delete(gameId), 30_000);
 }
 
-
 // ── Position evaluator (material + piece-square tables) ──────────────────────
 
 const PIECE_VALUES = { p: 100, n: 320, b: 330, r: 500, q: 900, k: 0 };
@@ -786,7 +779,6 @@ async function runAnticheatPipeline(gameId, pgn, whiteName, blackName, whitePlay
     console.error(`[anticheat] Pipeline error for game ${gameId}:`, err?.message ?? err);
   }
 }
-
 
 // ── Internal: called by /api/casual/[id] when a challenge is accepted ───────
 app.post('/notify-challenge-accepted', (req, res) => {
