@@ -385,7 +385,7 @@ export default function CalibratePage() {
     <div className="max-w-6xl mx-auto px-4 py-8 page-enter">
       <div className="text-center mb-8">
         <Bot className="text-orange-500 w-10 h-10 mx-auto mb-3" />
-        <h1 className="font-display text-3xl font-black text-chalk mb-2">Bot Calibration</h1>
+        <h1 className="font-display text-3xl font-black text-chalk mb-2">Rating Calibration</h1>
         <p className="text-ink-400">
           Play {gamesRemaining} more game{gamesRemaining !== 1 ? "s" : ""} to determine your rating.
         </p>
