@@ -35,6 +35,27 @@ const Chessboard = dynamic(
   { ssr: false },
 );
 
+function formatWhatsAppNumber(phone: string | null): string {
+  if (!phone) return '';
+  // Remove all non-digit characters
+  let cleaned = phone.replace(/\D/g, '');
+  
+  // If starts with 0, convert to international
+  if (cleaned.startsWith('0')) {
+    cleaned = '234' + cleaned.slice(1);
+  }
+  // If already has 234 prefix (with or without +), keep it
+  else if (cleaned.startsWith('234')) {
+    // keep as is
+  }
+  // If just 10 digits, assume Nigerian
+  else if (cleaned.length === 10) {
+    cleaned = '234' + cleaned;
+  }
+  
+  return cleaned;
+}
+
 function formatTime(ms: number): { text: string; isLow: boolean } {
   const s = Math.max(0, Math.floor(ms / 1000));
   return {
@@ -629,7 +650,7 @@ export default function GameRoomPage(): React.ReactElement {
             <div className="section-label mb-1">Opponent Contact</div>
 
             {(myColorRef.current === "white" ? blackWhatsapp : whiteWhatsapp) && (
-              <a href={`https://wa.me/${(myColorRef.current === "white" ? blackWhatsapp : whiteWhatsapp)?.replace(/\+/g, "")}`} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 text-sm text-green-400 hover:text-green-300 py-1.5 px-3 rounded-lg bg-green-400/5 border border-green-400/10 w-full">
+              <a href={`https://wa.me/${formatWhatsAppNumber(myColorRef.current === "white" ? blackWhatsapp : whiteWhatsapp)}`} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 text-sm text-green-400 hover:text-green-300 py-1.5 px-3 rounded-lg bg-green-400/5 border border-green-400/10 w-full">
                 <MessageCircle size={14} />Message on WhatsApp
               </a>
             )}
