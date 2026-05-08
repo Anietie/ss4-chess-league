@@ -193,7 +193,6 @@ export async function POST(req: NextRequest) {
   const { error: insertError } = await supabase.from('games').insert({
     season: season?.id ?? 1,
     league: 'calibration',
-    tier: 'n_a',
     competition_phase: 'calibration',
     white_player_id: player_id,
     black_player_id: player_id,
