@@ -103,7 +103,7 @@ function CapturedPieces({ chess, color }: { chess: Chess; color: 'white' | 'blac
           </span>
         ))}
         {captured.length === 0 && (
-          <span className="text-xs text-ink-600">\u2014</span>
+          <span className="text-xs text-ink-600">—</span>
         )}
       </div>
       {advantage > 0 && (
@@ -157,14 +157,14 @@ function Clock({ name, rating, timeMs, isActive, color, chess, playerColor }: Cl
       <div className="flex-1">
         <div className="flex items-center gap-2">
           <span className="text-xs text-ink-400">
-            {color === "white" ? "\u2654 White" : "\u265A Black"}
+            {color === "white" ? "♔ White" : "♚ Black"}
           </span>
           <CapturedPieces chess={chess} color={playerColor} />
         </div>
         <div className={`font-medium text-sm ${isActive ? "text-chalk" : "text-ink-400"}`}>
           {name}
         </div>
-        <div className="text-xs text-ink-500">\u00B1{Math.round(rating)}</div>
+        <div className="text-xs text-ink-500">±{Math.round(rating)}</div>
       </div>
       <span
         className={`font-mono text-2xl font-bold tabular-nums flex-shrink-0 ml-3 ${
